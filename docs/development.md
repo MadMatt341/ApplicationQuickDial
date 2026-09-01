@@ -90,6 +90,7 @@ Run only the sections affected by a change. Before testing, exit any installed o
 5. Check exact, prefix, word-boundary, substring, and alias searches, including mixed case.
 6. With `discoverInstalled` enabled, confirm an app not present in JSON is searchable after startup or tray reload.
 7. Add its name or AppUserModelID to `hiddenApplications`, reload, and confirm it is excluded.
+8. On a localized Windows installation, confirm an English component of an AppUserModelID or executable name (for example, `calc`) finds the localized application.
 
 ### Launching and icons
 

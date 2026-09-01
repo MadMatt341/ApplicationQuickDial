@@ -34,7 +34,7 @@ Run `build\Release\ApplicationQuickDial.exe`. The app starts in the notification
 ## Use
 
 - Press `Win+Space` to show or hide the launcher.
-- Type part of an application name or one of its aliases.
+- Type part of an application name, one of its aliases, or its language-neutral app identifier.
 - Use Up/Down to select, Enter to launch, or Escape to hide.
 - Left-click the tray icon to open the launcher.
 - Right-click the tray icon to edit/reload the app list, opt into starting with Windows, or exit.
@@ -69,6 +69,8 @@ The catalog format is:
 ```
 
 `discoverInstalled` defaults to `true`. Discovered applications are merged in memory after the configured entries and sorted alphabetically. Set it to `false` to use only the JSON list. `hiddenApplications` can contain a discovered application's display name, shell target, or AppUserModelID; matching is case-insensitive.
+
+As a lower-priority fallback, search also considers AppUserModelIDs, executable or shortcut filenames, and custom URI schemes. Identifiers are split at punctuation and camel-case boundaries, so language-neutral or English identifiers can match localized display names—for example, `calc` can find `Kalkulator` through `Microsoft.WindowsCalculator`. Explicit `aliases` remain the fallback for names an application does not expose in its identifier or target.
 
 For manual entries, `name` and `target` are required. `id`, `aliases`, `arguments`, `workingDirectory`, and `icon` are optional. Environment variables are expanded in `target`, `workingDirectory`, and `icon`. Targets may be executables, shortcuts, documents, URLs, or `shell:` application identifiers. An optional `id` participates in duplicate detection and can be referenced by `hiddenApplications`.
 

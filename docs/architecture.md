@@ -71,8 +71,9 @@ Every edit-control `EN_CHANGE` notification calls `UpdateResults`. The query is 
 | 2 | name match beginning after a non-alphanumeric boundary |
 | 3 | other name substring |
 | 4-7 | the same four match classes on an alias |
+| 8-11 | the same four match classes on an AppUserModelID, target filename, or custom URI scheme |
 
-Aliases are considered only when the name does not match. Results are stable-sorted by score, so equal scores retain catalog order. An empty query returns catalog order. The UI requests at most six results.
+Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty query returns catalog order. The UI requests at most six results.
 
 Up and Down wrap around the result list. Enter launches the selected result, Escape hides the window, and a left click launches the clicked row. Changing the query resets selection to the first result.
 

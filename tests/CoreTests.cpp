@@ -193,6 +193,42 @@ void TestSearchRanking() {
 
   results = quickdial::RankApplications(catalog, L"missing", 6);
   Check(results.empty(), "unmatched query returns no applications");
+
+  quickdial::Catalog localizedCatalog;
+  auto calculator = App(
+      L"Kalkulator", L"shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App");
+  calculator.identity = L"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+  localizedCatalog.applications = {
+      std::move(calculator),
+      App(L"Utility", L"utility.exe", {L"calc"}),
+      App(L"Calc Notes", L"notes.exe"),
+  };
+
+  results = quickdial::RankApplications(localizedCatalog, L"calc", 6);
+  Check(results == std::vector<std::size_t>({2, 1, 0}),
+        "localized apps match stable identifiers below names and explicit aliases");
+
+  results = quickdial::RankApplications(localizedCatalog, L"CALCULATOR", 6);
+  Check(results == std::vector<std::size_t>({0}),
+        "stable identifier matching is case-insensitive");
+  results = quickdial::RankApplications(localizedCatalog, L"windows calculator", 6);
+  Check(results == std::vector<std::size_t>({0}),
+        "identifier punctuation and camel case create searchable word boundaries");
+
+  quickdial::Catalog targetCatalog;
+  targetCatalog.applications = {
+      App(L"Edytor", L"C:\\Tools\\EnglishEditor.exe"),
+      App(L"Czat", L"slack://open"),
+  };
+  Check(quickdial::RankApplications(targetCatalog, L"englisheditor", 6) ==
+            std::vector<std::size_t>({0}),
+        "executable filename is a lowest-priority search fallback");
+  Check(quickdial::RankApplications(targetCatalog, L"english editor", 6) ==
+            std::vector<std::size_t>({0}),
+        "camel-cased executable names can be searched as separate words");
+  Check(quickdial::RankApplications(targetCatalog, L"slack", 6) ==
+            std::vector<std::size_t>({1}),
+        "custom URI scheme is a lowest-priority search fallback");
 }
 
 void TestHotkeyState() {

@@ -64,6 +64,88 @@ int MatchScore(std::wstring_view candidate, std::wstring_view query) {
   return std::numeric_limits<int>::max();
 }
 
+int BestMatchScore(
+    const std::vector<std::wstring>& candidates, std::wstring_view query, int scoreOffset) {
+  int score = std::numeric_limits<int>::max();
+  for (const auto& candidate : candidates) {
+    const int candidateScore = MatchScore(FoldCase(candidate), query);
+    if (candidateScore != std::numeric_limits<int>::max()) {
+      score = std::min(score, scoreOffset + candidateScore);
+    }
+  }
+  return score;
+}
+
+std::wstring HumanizeIdentifier(std::wstring_view value) {
+  std::wstring result;
+  result.reserve(value.size());
+  wchar_t previous = L'\0';
+  for (const wchar_t character : value) {
+    if (!std::iswalnum(character)) {
+      if (!result.empty() && result.back() != L' ') {
+        result.push_back(L' ');
+      }
+      previous = L'\0';
+      continue;
+    }
+    if (previous != L'\0' && std::iswlower(previous) && std::iswupper(character) &&
+        result.back() != L' ') {
+      result.push_back(L' ');
+    }
+    result.push_back(character);
+    previous = character;
+  }
+  while (!result.empty() && result.back() == L' ') {
+    result.pop_back();
+  }
+  return result;
+}
+
+std::wstring TargetSearchValue(std::wstring_view target) {
+  const std::size_t schemeEnd = target.find(L"://");
+  if (schemeEnd != std::wstring_view::npos) {
+    const std::wstring_view scheme = target.substr(0, schemeEnd);
+    const std::wstring foldedScheme = FoldCase(scheme);
+    if (foldedScheme == L"http" || foldedScheme == L"https" || foldedScheme == L"file") {
+      return {};
+    }
+    return std::wstring(scheme);
+  }
+
+  const std::size_t separator = target.find_last_of(L"\\/");
+  std::wstring_view leaf =
+      separator == std::wstring_view::npos ? target : target.substr(separator + 1);
+  const std::size_t extension = leaf.find_last_of(L'.');
+  if (extension != std::wstring_view::npos && extension > 0 &&
+      !FoldCase(target).starts_with(L"shell:appsfolder\\")) {
+    leaf = leaf.substr(0, extension);
+  }
+  return std::wstring(leaf);
+}
+
+int IdentifierMatchScore(
+    const ApplicationEntry& application, std::wstring_view query, int scoreOffset) {
+  int score = std::numeric_limits<int>::max();
+  const auto consider = [&](std::wstring_view candidate) {
+    const int candidateScore = MatchScore(FoldCase(candidate), query);
+    if (candidateScore != std::numeric_limits<int>::max()) {
+      score = std::min(score, scoreOffset + candidateScore);
+    }
+  };
+
+  if (application.identity && !application.identity->empty()) {
+    consider(*application.identity);
+    consider(HumanizeIdentifier(*application.identity));
+  }
+
+  const std::wstring target = TargetSearchValue(application.target);
+  if (!target.empty()) {
+    consider(target);
+    consider(HumanizeIdentifier(target));
+  }
+  return score;
+}
+
 }  // namespace
 
 std::vector<std::size_t> RankApplications(
@@ -81,12 +163,10 @@ std::vector<std::size_t> RankApplications(
     const ApplicationEntry& application = catalog.applications[index];
     int score = MatchScore(FoldCase(application.name), foldedQuery);
     if (score == std::numeric_limits<int>::max()) {
-      for (const auto& alias : application.aliases) {
-        const int aliasScore = MatchScore(FoldCase(alias), foldedQuery);
-        if (aliasScore != std::numeric_limits<int>::max()) {
-          score = std::min(score, 4 + aliasScore);
-        }
-      }
+      score = BestMatchScore(application.aliases, foldedQuery, 4);
+    }
+    if (score == std::numeric_limits<int>::max()) {
+      score = IdentifierMatchScore(application, foldedQuery, 8);
     }
     if (score != std::numeric_limits<int>::max()) {
       scored.emplace_back(score, index);
