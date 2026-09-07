@@ -987,6 +987,11 @@ LRESULT CALLBACK LauncherApp::WindowProcedure(HWND window, UINT message, WPARAM 
 LRESULT CALLBACK LauncherApp::EditProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR referenceData) {
   auto* app = reinterpret_cast<LauncherApp*>(referenceData);
+  // TranslateMessage queues these characters before WM_KEYDOWN is dispatched.
+  // The actions below consume the keys; the single-line edit would beep on the characters.
+  if (message == WM_CHAR && (wParam == VK_RETURN || wParam == VK_ESCAPE)) {
+    return 0;
+  }
   if (message == WM_KEYDOWN) {
     switch (wParam) {
       case VK_ESCAPE:

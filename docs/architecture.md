@@ -98,6 +98,8 @@ Aliases are considered only when the name does not match, and language-neutral i
 
 Up and Down wrap around the result list. Enter launches the selected result, Escape hides the window, and a left click launches the clicked row. Changing the query resets selection to the first result.
 
+The edit subclass handles Enter and Escape on `WM_KEYDOWN` and consumes their queued `WM_CHAR` messages so the single-line edit control does not play an invalid-character beep.
+
 ## Window and rendering
 
 The launcher is a topmost `WS_POPUP`/`WS_EX_TOOLWINDOW`, so it does not create a normal taskbar button. It hides when deactivated.

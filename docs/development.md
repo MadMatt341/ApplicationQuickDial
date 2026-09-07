@@ -105,6 +105,8 @@ Run only the sections affected by a change. Before testing, exit any installed o
    Also release Windows first while continuing to hold Space: repeats must remain suppressed until Space is released.
 4. Check that unrelated Windows shortcuts still work.
 5. Press Escape and click another window; either action should hide the launcher.
+6. Confirm Enter launches a selected result and Escape hides the launcher without a system beep.
+   Also check Enter with no matching results, normal typing, and Backspace.
 
 ### Catalog and search
 
