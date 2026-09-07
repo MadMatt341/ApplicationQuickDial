@@ -5,6 +5,7 @@
 #include "DiscoveryProcess.h"
 #include "HookManager.h"
 #include "InstalledApps.h"
+#include "InstalledAppsWatcher.h"
 #include "LauncherVisualStyle.h"
 #include "Search.h"
 #include "StartupManager.h"
@@ -40,6 +41,8 @@ constexpr UINT kCommandExit = 1005;
 constexpr std::size_t kMaximumResults = 6;
 constexpr UINT_PTR kTrayRetryTimer = 1;
 constexpr UINT_PTR kBackgroundTimer = 2;
+constexpr UINT_PTR kInstalledApplicationsChangeTimer = 3;
+constexpr UINT kInstalledApplicationsDebounceMs = 750;
 constexpr std::size_t kMaximumIconSources = 128;
 
 float ScaleForDpi(float value, UINT dpi) {
@@ -155,6 +158,7 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
 
   iconTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 2, 32);
   discoveryTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 1, 1);
+  installedAppsWatcher_ = std::make_unique<InstalledAppsWatcher>();
   taskbarCreatedMessage_ = RegisterWindowMessageW(L"TaskbarCreated");
   if (taskbarCreatedMessage_ == 0) {
     return false;
@@ -170,12 +174,26 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
 }
 
 int LauncherApp::Run() {
-  MSG message{};
-  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-    TranslateMessage(&message);
-    DispatchMessageW(&message);
+  for (;;) {
+    const auto directories = installedAppsWatcher_->DirectoryHandles();
+    const DWORD count = static_cast<DWORD>(directories.size());
+    const DWORD ready = MsgWaitForMultipleObjectsEx(count, directories.data(), INFINITE,
+        QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    if (ready == WAIT_FAILED) {
+      ShowNotification(L"Application Quick Dial", L"Could not wait for Windows events. Restart Quick Dial.");
+      DestroyWindow(window_);
+      return 1;
+    }
+    if (ready < WAIT_OBJECT_0 + count) {
+      HandleInstalledApplicationsDirectoryChange(ready - WAIT_OBJECT_0);
+    }
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      if (message.message == WM_QUIT) return static_cast<int>(message.wParam);
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
   }
-  return static_cast<int>(message.wParam);
 }
 
 bool LauncherApp::CreateFactories() {
@@ -478,6 +496,7 @@ void LauncherApp::ReloadCatalog(bool refreshInstalledApplications) {
   configuredCatalog_ = std::move(*result.catalog);
   catalogFileError_.clear();
   hasValidCatalog_ = true;
+  UpdateInstalledApplicationsWatcher();
   RebuildCatalog();
   if (configuredCatalog_.discoverInstalled &&
       (refreshInstalledApplications || enableDiscovery || !discoveryRequested_)) {
@@ -496,7 +515,9 @@ void LauncherApp::RebuildCatalog() {
     selectedTarget = catalog_.applications[results_[selectedResult_]].target;
   }
   catalog_ = MergeInstalledApplications(configuredCatalog_, installedApplications_);
-  catalogError_ = catalog_.discoverInstalled ? installedApplicationsError_ : std::wstring{};
+  catalogError_ = catalog_.discoverInstalled ?
+      (installedApplicationsError_.empty() ? installedApplicationsWatchError_ : installedApplicationsError_) :
+      std::wstring{};
   iconCache_.clear();
   iconAttempted_.clear();
   UpdateResults();
@@ -506,6 +527,53 @@ void LauncherApp::RebuildCatalog() {
       break;
     }
   }
+}
+
+void LauncherApp::UpdateInstalledApplicationsWatcher() {
+  const std::wstring previousError = installedApplicationsWatchError_;
+  if (!hasValidCatalog_ || !configuredCatalog_.discoverInstalled) {
+    KillTimer(window_, kInstalledApplicationsChangeTimer);
+    discoveryChangePending_ = discoveryAgain_ = false;
+    installedApplicationsWatchError_.clear();
+    if (!installedAppsWatcher_->Stop()) {
+      installedApplicationsWatchError_ = L"Could not stop app-change notifications. Restart Quick Dial.";
+    }
+  } else {
+    installedAppsWatcher_->Start(window_, kMessageInstalledApplicationsChanged, installedApplicationsWatchError_);
+  }
+  if (!installedApplicationsWatchError_.empty() && installedApplicationsWatchError_ != previousError) {
+    ShowNotification(L"Application Quick Dial", installedApplicationsWatchError_);
+  }
+}
+
+void LauncherApp::ScheduleInstalledApplicationsRefresh() {
+  if (!hasValidCatalog_ || !configuredCatalog_.discoverInstalled) return;
+  discoveryChangePending_ = true;
+  // A one-shot debounce after an event, never a periodic app-list poll.
+  if (SetTimer(window_, kInstalledApplicationsChangeTimer, kInstalledApplicationsDebounceMs, nullptr) == 0) {
+    installedApplicationsWatchError_ = L"Could not delay an app-list refresh. Restart Quick Dial.";
+    ShowNotification(L"Application Quick Dial", installedApplicationsWatchError_);
+    RefreshChangedInstalledApplications();
+  }
+}
+
+void LauncherApp::HandleInstalledApplicationsDirectoryChange(std::size_t index) {
+  std::wstring error;
+  const bool changed = installedAppsWatcher_->ConsumeDirectoryChange(index, error);
+  if (!error.empty()) {
+    if (!installedAppsWatcher_->Stop()) error += L" Notification cleanup failed; restart Quick Dial.";
+    installedApplicationsWatchError_ = error;
+    if (catalogFileError_.empty()) RebuildCatalog();
+    ShowNotification(L"Application Quick Dial", error);
+  }
+  if (changed || !error.empty()) ScheduleInstalledApplicationsRefresh();
+}
+
+void LauncherApp::RefreshChangedInstalledApplications() {
+  KillTimer(window_, kInstalledApplicationsChangeTimer);
+  if (!std::exchange(discoveryChangePending_, false) || !configuredCatalog_.discoverInstalled) return;
+  if (discoveryPending_) discoveryAgain_ = true;
+  else RequestInstalledApplications();
 }
 
 void LauncherApp::RequestInstalledApplications() {
@@ -520,7 +588,7 @@ void LauncherApp::RequestInstalledApplications() {
   });
   if (!discoveryPending_) {
     installedApplicationsError_ = L"Could not start Windows app discovery. Try Reload app list.";
-    catalogError_ = installedApplicationsError_;
+    if (catalogFileError_.empty()) RebuildCatalog();
   } else {
     StartBackgroundTimer();
   }
@@ -528,13 +596,20 @@ void LauncherApp::RequestInstalledApplications() {
 
 void LauncherApp::ApplyInstalledApplications(InstalledAppsResult installed) {
   discoveryPending_ = false;
+  const std::wstring previousError = installedApplicationsError_;
+  bool changed = false;
   if (installed) {
+    changed = installed.applications.size() != installedApplications_.size() ||
+        !std::equal(installed.applications.begin(), installed.applications.end(), installedApplications_.begin(),
+            [](const ApplicationEntry& left, const ApplicationEntry& right) {
+              return left.name == right.name && left.target == right.target && left.identity == right.identity;
+            });
     installedApplications_ = std::move(installed.applications);
     installedApplicationsError_.clear();
   } else {
     installedApplicationsError_ = std::move(installed.error);
   }
-  if (catalogFileError_.empty()) {
+  if (catalogFileError_.empty() && (changed || previousError != installedApplicationsError_)) {
     RebuildCatalog();
   }
   const bool refreshAgain = std::exchange(discoveryAgain_, false);
@@ -544,7 +619,8 @@ void LauncherApp::ApplyInstalledApplications(InstalledAppsResult installed) {
     notifyAfterDiscovery_ = false;
     ShowNotification(L"Application Quick Dial",
                      catalogError_.empty() ? L"The app list was reloaded." : catalogError_);
-  } else if (!installedApplicationsError_.empty() && configuredCatalog_.discoverInstalled) {
+  } else if (!installedApplicationsError_.empty() && installedApplicationsError_ != previousError &&
+             configuredCatalog_.discoverInstalled) {
     ShowNotification(L"Could not discover installed apps", installedApplicationsError_);
   }
 }
@@ -564,10 +640,7 @@ void LauncherApp::ProcessBackgroundResults() {
     InvalidateRect(window_, nullptr, FALSE);
   }
   if (discoveryTasks_->TakeFailure()) {
-    installedApplicationsError_ = L"Windows app discovery failed. Try Reload app list.";
-    discoveryPending_ = false;
-    if (catalogFileError_.empty()) RebuildCatalog();
-    ShowNotification(L"Application Quick Dial", installedApplicationsError_);
+    ApplyInstalledApplications({{}, L"Windows app discovery failed. Try Reload app list."});
   }
   if (iconTasks_->TakeFailure()) {
     pendingIconTargets_.clear();
@@ -586,12 +659,17 @@ void LauncherApp::ProcessBackgroundResults() {
 }
 
 void LauncherApp::StopBackgroundTasks() {
+  discoveryChangePending_ = false;
+  if (installedAppsWatcher_ && !installedAppsWatcher_->Stop()) {
+    OutputDebugStringW(L"Quick Dial: could not stop app-change notifications during shutdown.\n");
+  }
   discoveryCancellation_.request_stop();
   if (iconTasks_) iconTasks_->Stop();
   if (discoveryTasks_) discoveryTasks_->Stop();
   if (window_) {
     KillTimer(window_, kBackgroundTimer);
     KillTimer(window_, kTrayRetryTimer);
+    KillTimer(window_, kInstalledApplicationsChangeTimer);
   }
 }
 
@@ -937,6 +1015,13 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
   if (taskbarCreatedMessage_ != 0 && message == taskbarCreatedMessage_) {
     trayIconAdded_ = false;
     AddTrayIcon();
+    if (installedAppsWatcher_) {
+      if (!installedAppsWatcher_->Stop()) {
+        ShowNotification(L"Application Quick Dial", L"Could not restore app-change notifications. Restart Quick Dial.");
+      }
+      UpdateInstalledApplicationsWatcher();
+      ScheduleInstalledApplicationsRefresh();
+    }
     return 0;
   }
   switch (message) {
@@ -1033,10 +1118,23 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       ProcessBackgroundResults();
       return 0;
 
+    case kMessageInstalledApplicationsChanged: {
+      std::wstring error;
+      const bool changed = InstalledAppsWatcher::ConsumeNotification(wParam, lParam, error);
+      if (!hasValidCatalog_ || !configuredCatalog_.discoverInstalled) return 0;
+      if (!error.empty()) {
+        installedApplicationsWatchError_ = error;
+        if (catalogFileError_.empty()) RebuildCatalog();
+        ShowNotification(L"Application Quick Dial", error);
+      }
+      if (changed || !error.empty()) ScheduleInstalledApplicationsRefresh();
+      return 0;
+    }
+
     case kMessageBenchmarkState: {
       if (!benchmarkPresentedEvent_) return 0;
       LRESULT state = kBenchmarkAvailable;
-      if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ ||
+      if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ || discoveryChangePending_ ||
           discoveryTasks_->HasPending() || iconTasks_->HasPending() ||
           (IsWindowVisible(window_) && GetUpdateRect(window_, nullptr, FALSE))) {
         state |= kBenchmarkPending;
@@ -1050,6 +1148,8 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         AddTrayIcon();
       } else if (wParam == kBackgroundTimer) {
         ProcessBackgroundResults();
+      } else if (wParam == kInstalledApplicationsChangeTimer) {
+        RefreshChangedInstalledApplications();
       }
       return 0;
 

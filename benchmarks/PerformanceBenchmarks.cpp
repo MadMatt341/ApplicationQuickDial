@@ -215,7 +215,15 @@ bool WaitForBackgroundIdle(const ChildProcess& child, bool visible) {
   std::optional<Clock::time_point> idleSince;
   while (Clock::now() < deadline) {
     const auto state = ReadBackgroundState(child);
-    if (!state || (IsWindowVisible(child.window) != FALSE) != visible) return false;
+    if (!state) {
+      std::cerr << "Launcher state became unavailable or reported an error while waiting for idle.\n";
+      return false;
+    }
+    if ((IsWindowVisible(child.window) != FALSE) != visible) {
+      std::cerr << "Launcher visibility changed while waiting for idle (expected "
+                << (visible ? "visible" : "hidden") << "). Keep the benchmark in the foreground.\n";
+      return false;
+    }
     if ((*state & quickdial::kBenchmarkPending) != 0) {
       idleSince.reset();
     } else if (!idleSince) {
@@ -225,6 +233,7 @@ bool WaitForBackgroundIdle(const ChildProcess& child, bool visible) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+  std::cerr << "Launcher background work did not settle within ten seconds.\n";
   return false;
 }
 

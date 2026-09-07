@@ -11,6 +11,7 @@ inline constexpr UINT kMessageHideLauncher = WM_APP + 4;
 inline constexpr UINT kMessageBackgroundComplete = WM_APP + 5;
 // Read-only diagnostic, enabled only for launches with benchmark events.
 inline constexpr UINT kMessageBenchmarkState = WM_APP + 6;
+inline constexpr UINT kMessageInstalledApplicationsChanged = WM_APP + 7;
 inline constexpr LRESULT kBenchmarkAvailable = 1;
 inline constexpr LRESULT kBenchmarkPending = 2;
 inline constexpr LRESULT kBenchmarkFailed = 4;

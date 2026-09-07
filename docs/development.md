@@ -50,7 +50,9 @@ With a normal interactive Windows desktop, run the launcher integration checks s
 .\build\Release\quickdial_launcher_tests.exe
 ```
 
-These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch target applications, or restart Explorer. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window.
+These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch target applications, or restart Explorer. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window. Automatic discovery checks exercise actual Apps-folder Shell notification delivery, event coalescing, refresh while hidden, retry after failure, cancellation when disabled, and cached reopening without polling. Deterministic completion checks also verify that a newly installed app appears in the current query, disappears after removal, and leaves icon state intact when a scan finds no changes.
+
+Run `quickdial_launcher_tests.exe --check-installation` for the real Start-menu notification check. It creates a uniquely named temporary executable and user Start-menu shortcut while the launcher is hidden, verifies discovery without opening or manually reloading, then removes the shortcut and verifies the result disappears. It sends no synthetic change notification for the shortcut. Both fixture files are cleaned up; the target is never launched.
 
 The cache stress check uses a generated 32-pixel BMP and distinct application targets. It verifies eviction at 128 sources, reuse ordering, reloading an evicted source, discarding results from before a refresh, and reusing pixels after releasing the render target. It complements the performance runner's repeated opens of the same six results; neither test substitutes for long-duration use across arbitrary third-party Shell providers.
 
@@ -62,6 +64,7 @@ Discovery tests use private fixture modes in the test executable to exercise fai
 |---|---|---|
 | Catalog field or validation | `src/Catalog.h`, `src/Catalog.cpp` | `tests/CoreTests.cpp`, `README.md`, `docs/architecture.md` |
 | Installed-app discovery or merge | `src/InstalledApps.*`, `src/LauncherApp.cpp` | catalog tests, tray reload, discovered app launches |
+| Automatic app-change detection | `src/InstalledAppsWatcher.*`, `src/LauncherApp.cpp` | notification delivery, temporary shortcut check, cached opens, hidden idle, Explorer recovery |
 | Discovery process lifetime or transport | `src/DiscoveryProcess.*`, `src/DiscoveryProtocol.*`, `src/main.cpp` | discovery tests, error retention, real-process memory benchmark |
 | Background lifetime or limits | `src/BackgroundTasks.*` | `tests/BackgroundTests.cpp`, shutdown during stalled work |
 | Icon decoding and source cache | `src/IconLoader.*`, `src/LauncherApp.cpp` | background tests, custom images, repeated reload/open |
@@ -114,6 +117,7 @@ Run only the sections affected by a change. Before testing, exit any installed o
 7. Add its name or AppUserModelID to `hiddenApplications`, reload, and confirm it is excluded.
 8. On a localized Windows installation, confirm an English component of an AppUserModelID or executable name (for example, `calc`) finds the localized application.
 9. Type and select a result during discovery/reload; completion must preserve both. A failed discovery must retain the last successful installed-app list. These completion paths are covered by `quickdial_launcher_tests.exe` with deterministic results.
+10. Run `quickdial_launcher_tests.exe --check-installation` to verify actual shortcut registration/removal through Windows events while Quick Dial is running, including while hidden. The ordinary checks also verify that `discoverInstalled: false` stops subscriptions and that repeated opening and idle timer messages do not start scans.
 
 ### Launching and icons
 

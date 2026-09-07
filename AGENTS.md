@@ -43,6 +43,7 @@ Generated content belongs in `build/` or `out/`; do not add generated Visual Stu
 - `src/HotkeyState.*`: testable `Win+Space` key-state machine.
 - `src/HookManager.*`: low-level keyboard hook thread and UI notification.
 - `src/DiscoveryProcess.*`, `src/DiscoveryProtocol.*`: temporary discovery helper, cancellation, and bounded app-list transport.
+- `src/InstalledAppsWatcher.*`: event-driven app-list and Start-menu notifications; no polling or enumeration.
 - `src/StartupManager.*`: current-user `Run` registry entry.
 - `src/AppMessages.h`: private messages used to cross thread/process boundaries.
 - `tests/CoreTests.cpp`: tests for catalog parsing, search, and hotkey state.

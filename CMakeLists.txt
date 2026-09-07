@@ -37,6 +37,7 @@ target_link_libraries(quickdial_discovery PUBLIC quickdial_core ole32)
 
 add_executable(ApplicationQuickDial WIN32
   src/HookManager.cpp
+  src/InstalledAppsWatcher.cpp
   src/LauncherApp.cpp
   src/LauncherVisualStyle.cpp
   src/StartupManager.cpp
@@ -90,6 +91,7 @@ if(BUILD_TESTING)
   add_executable(quickdial_launcher_tests
     tests/LauncherTests.cpp
     src/HookManager.cpp
+    src/InstalledAppsWatcher.cpp
     src/LauncherApp.cpp
     src/LauncherVisualStyle.cpp
     src/StartupManager.cpp

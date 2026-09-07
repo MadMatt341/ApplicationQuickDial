@@ -33,7 +33,7 @@ Private working set counts resident pages marked private by Windows. Total worki
 - **Hidden initial memory** is sampled before the launcher has appeared, after the discovery helper exits, its shared mapping is released, and its main-thread completion finishes, followed by 250 ms continuously without pending work. Discovery settling time is reported separately from tray readiness, including that quiet interval.
 - **Visible memory/CPU** is sampled after queued icon work, main-thread completions, and pending window painting finish, followed by the same 250 ms quiet interval.
 - **Hidden-after-use memory/CPU** is sampled after the visible launcher is hidden and display resources are released.
-- **CPU** uses process kernel plus user time over a three-second wall-clock interval with no input or animation.
+- **CPU** uses process kernel plus user time over a three-second wall-clock interval with no input. The visible search field retains its native blinking caret.
 - **Parsing/search** use a 100-entry synthetic catalog, intentionally larger than the expected hand-maintained list.
 - **Shutdown** posts the real close command and requires a normal process exit within three seconds. Forced termination is cleanup after a failed benchmark, never a successful result. Shutdown p95 is informational; nine of the ten children close directly after readiness, while discovery may still be running.
 
@@ -54,7 +54,47 @@ cmake --build build --config Release --parallel
 
 The benchmark briefly shows and hides the real launcher while measuring presentation. Leave it in the foreground during the visible samples. Exit code `0` means every budget passed, `1` means at least one metric exceeded its budget, and `2` means setup, measurement, or graceful shutdown failed.
 
-## Current baseline
+## Notification watcher measurements
+
+Measured on 2026-09-07 after replacing refresh-on-open and periodic scanning with Windows notifications. The resident process watches the virtual Apps folder and association changes through the Shell, and waits on two Start-menu directory-change handles in its existing message loop. No app-list scan runs on an ordinary open or idle timer. The real shortcut integration check confirmed automatic addition while hidden and removal after the shortcut was deleted, without synthetic notifications for either operation.
+
+| Metric | Event-driven build | Budget |
+| --- | ---: | ---: |
+| Fresh-process startup median / p95 | 31.31 / 33.21 ms | p95 ≤ 100 ms |
+| First show to first paint | 36.47 ms | ≤ 100 ms |
+| Warm show median / p95 | 4.67 / 5.62 ms | p95 ≤ 50 ms |
+| Discovery settled after readiness | 647.02 ms | Informational, includes 250 ms quiet |
+| Graceful shutdown p95 | 14.43 ms | Informational; normal exit required |
+| Hidden initial working set / private working set / private bytes | 16.28 / 1.91 / 2.57 MB | ≤ 20 / 5 / 5 MB |
+| Visible working set / private working set / private bytes | 54.18 / 11.18 / 15.70 MB | ≤ 64 / 20 / 20 MB |
+| Hidden-after-use working set / private working set / private bytes | 53.27 / 10.28 / 14.79 MB | ≤ 64 / 20 / 16 MB |
+| Hidden idle CPU over 3 seconds | 0.00 ms | ≤ 10 ms |
+| Visible idle CPU over 3 seconds | **15.62 ms** | **≤ 10 ms: failed** |
+| Parse 100 apps / search 100 apps | 0.71 / 0.02 ms | ≤ 2 / 0.25 ms |
+| Release executable size | 226.50 KB | ≤ 256 KB |
+
+All memory and responsiveness budgets passed, but this run did **not** pass the full contract because of the visible idle CPU result. No budget or sampling interval was changed. A comparison built from unchanged `HEAD` did not reach its visible resource sample because the window failed to settle; it therefore does not establish whether the visible CPU result is a regression. The benchmark now distinguishes visibility changes from background-settling timeouts in its failure output.
+
+An initial watcher implementation used filesystem Shell PIDLs for the Start menus and retained 20.86 MB at hidden startup. Using directory paths and kernel change-notification handles instead reduced that sample to 16.28 MB. Registration does not enumerate installed apps; enumeration still runs only in the temporary helper.
+
+## Visible idle CPU investigation
+
+Controlled probes on 2026-09-07 identified the native search-field caret as the recurring UI-thread work. A temporary diagnostic executable built the actual launcher sources and counted dequeued messages with a thread-local hook. Its parent sampled process and thread time and cycle counters externally over three consecutive three-second intervals. Samples required the window to remain visible and foreground; a run interrupted by focus loss was discarded.
+
+| Configuration | UI-thread cycles in first 3 seconds | Search-field system timer messages | UI-thread cycles in third 3-second sample |
+| --- | ---: | ---: | ---: |
+| Current notification build | 3,557,960 | 6 | 0 |
+| Unchanged pre-notification source, `b9ae56c` | 3,550,053 | 6 | 0 |
+| Current build with watcher stopped | 3,695,868 | 6 | 0 |
+| Current build with caret destroyed for diagnosis | 0 | 0 | 0 |
+
+Stopping the watcher left the activity intact. Destroying the caret removed all UI-thread activity in all three samples. The unchanged source exhibited the same timer messages and nearly identical first-sample cycle count. No discovery timer, discovery completion, or Shell-change message was observed during these samples. Some samples also contained a small amount of work on other threads; its exact origin was not established.
+
+Every valid probe sample reported 0 ms through process CPU-time accounting, even when cycle counters showed work. The earlier 15.62 ms benchmark result therefore should not be interpreted as a precise measurement of watcher overhead. Microsoft explains the limited accuracy of thread-time accounting and recommends cycle counters for finer CPU-usage observation: [CPU usage measurement](https://devblogs.microsoft.com/oldnewthing/20161021-00/?p=94565). Cycles are reported directly and are not converted to milliseconds.
+
+This establishes that the observed recurring UI work predates the watcher; it does not retroactively pass the failed benchmark or establish zero watcher overhead under every condition. Caret behavior, benchmark limits, and sample duration remain unchanged. Local diagnostic sources and raw logs are under `out/idle-probe/` and `out/idle-probe-{current,caret-off,baseline,watcher-off}.log`; these generated investigation artifacts are not tracked.
+
+## Pre-notification baseline
 
 Measured on the development Windows 11 x64 workstation on 2026-09-07 with installed-app discovery enabled (162 apps), after moving discovery to the temporary helper. The overall benchmark **passes every unchanged budget**. Discovery settled 690.84 ms after readiness, including the 250 ms quiet interval. All ten children exited normally; shutdown p95 was 13.20 ms. Full-desktop discovery tests separately confirmed that the helper returns the same 162 names, targets, identifiers, and ordering as direct Shell enumeration.
 

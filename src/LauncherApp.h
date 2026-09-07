@@ -20,6 +20,7 @@ namespace quickdial {
 
 class HookManager;
 class BackgroundTasks;
+class InstalledAppsWatcher;
 struct InstalledAppsResult;
 
 inline constexpr wchar_t kWindowClassName[] = L"ApplicationQuickDial.LauncherWindow";
@@ -60,6 +61,10 @@ class LauncherApp {
   void ToggleLauncher();
   void ReloadCatalog(bool refreshInstalledApplications = false);
   void RebuildCatalog();
+  void UpdateInstalledApplicationsWatcher();
+  void HandleInstalledApplicationsDirectoryChange(std::size_t index);
+  void ScheduleInstalledApplicationsRefresh();
+  void RefreshChangedInstalledApplications();
   void RequestInstalledApplications();
   void ApplyInstalledApplications(InstalledAppsResult installed);
   void ProcessBackgroundResults();
@@ -97,8 +102,10 @@ class LauncherApp {
   bool discoveryRequested_ = false;
   bool discoveryPending_ = false;
   bool discoveryAgain_ = false;
+  bool discoveryChangePending_ = false;
   bool notifyAfterDiscovery_ = false;
   std::wstring installedApplicationsError_;
+  std::wstring installedApplicationsWatchError_;
   std::wstring catalogFileError_;
   bool hasValidCatalog_ = false;
   std::wstring catalogError_;
@@ -107,6 +114,7 @@ class LauncherApp {
   std::size_t selectedResult_ = 0;
 
   std::unique_ptr<HookManager> hookManager_;
+  std::unique_ptr<InstalledAppsWatcher> installedAppsWatcher_;
   std::unique_ptr<BackgroundTasks> iconTasks_;
   std::unique_ptr<BackgroundTasks> discoveryTasks_;
   std::stop_source discoveryCancellation_;

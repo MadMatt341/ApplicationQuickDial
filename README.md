@@ -37,6 +37,7 @@ Run `build\Release\ApplicationQuickDial.exe`. The app starts in the notification
 - Type part of an application name, one of its aliases, or its language-neutral app identifier.
 - Use Up/Down to select, Enter to launch, or Escape to hide.
 - Left-click the tray icon to open the launcher.
+- Newly installed applications become searchable automatically after Windows reports a change to its application list or Start-menu shortcuts.
 - Right-click the tray icon to edit/reload the app list, opt into starting with Windows, or exit.
 
 While Application Quick Dial is running, it intentionally replaces Windows' normal `Win+Space` keyboard-layout shortcut. The low-level shortcut is unavailable on the secure desktop and may not intercept input aimed at a higher-integrity application.
@@ -74,7 +75,7 @@ As a lower-priority fallback, search also considers AppUserModelIDs, executable 
 
 For manual entries, `name` and `target` are required. `id`, `aliases`, `arguments`, `workingDirectory`, and `icon` are optional. Environment variables are expanded in `target`, `workingDirectory`, and `icon`. Targets may be executables, shortcuts, documents, URLs, or `shell:` application identifiers. An optional `id` participates in duplicate detection and can be referenced by `hiddenApplications`.
 
-The JSON file is reloaded whenever the launcher opens. Windows app discovery runs in the background at startup and when **Reload app list** is selected from the tray menu. Manual entries are available immediately; discovered entries appear when scanning finishes, preserving your query and selection. A failed scan, including one that exceeds the 30-second timeout, retains the previous discovered list and can be retried with **Reload app list**. Invalid edits never replace the last catalog that was parsed successfully.
+The JSON file is reloaded whenever the launcher opens. Windows app discovery runs in the background at startup and in response to Windows application-list, registration, or Start-menu changes. Related notifications are grouped into one refresh after a short pause, including while Quick Dial is hidden. Opening the launcher uses the cached app list; there is no periodic scanning. New apps appear after Windows registers them in its Apps folder and the refresh finishes; removed discovered apps disappear on refresh. Manual entries and the previous discovered list remain available while scanning, preserving your query and selection. A failed scan, including one that exceeds the 30-second timeout, retains the previous discovered list; another change notification or **Reload app list** retries discovery. Invalid edits never replace the last catalog that was parsed successfully.
 
 Icons also load in the background. Custom images keep their proportions, and multi-resolution ICO files use the best available size for the monitor's scale. Larger images are downscaled with transparency preserved; source dimensions are limited to 8192 pixels per side and 16 megapixels. Unsupported or oversized images fall back to the application's shell icon. **Reload app list** refreshes cached icons. The tray icon is restored automatically if Windows Explorer restarts.
 
