@@ -22,6 +22,15 @@ target_compile_definitions(quickdial_core PUBLIC UNICODE _UNICODE NOMINMAX WIN32
 target_compile_options(quickdial_core PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(quickdial_core PUBLIC windowsapp shell32)
 
+add_library(quickdial_background STATIC
+  src/BackgroundTasks.cpp
+  src/IconLoader.cpp
+)
+target_include_directories(quickdial_background PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(quickdial_background PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(quickdial_background PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(quickdial_background PUBLIC ole32 shell32 user32 gdi32 windowscodecs)
+
 add_executable(ApplicationQuickDial WIN32
   src/HookManager.cpp
   src/LauncherApp.cpp
@@ -36,6 +45,7 @@ target_compile_options(ApplicationQuickDial PRIVATE /W4 /permissive- /EHsc)
 target_link_options(ApplicationQuickDial PRIVATE /MANIFEST:NO)
 target_link_libraries(ApplicationQuickDial PRIVATE
   quickdial_core
+  quickdial_background
   advapi32
   comctl32
   d2d1
@@ -58,6 +68,23 @@ if(BUILD_TESTING)
   target_compile_options(quickdial_tests PRIVATE /W4 /permissive- /EHsc)
   target_link_libraries(quickdial_tests PRIVATE quickdial_core)
   add_test(NAME quickdial_core_tests COMMAND quickdial_tests)
+
+  add_executable(quickdial_background_tests tests/BackgroundTests.cpp)
+  target_compile_options(quickdial_background_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_background_tests PRIVATE quickdial_background)
+  add_test(NAME quickdial_background_tests COMMAND quickdial_background_tests)
+
+  # Requires an interactive Windows desktop; run explicitly, outside CTest.
+  add_executable(quickdial_launcher_tests
+    tests/LauncherTests.cpp
+    src/HookManager.cpp
+    src/LauncherApp.cpp
+    src/LauncherVisualStyle.cpp
+    src/StartupManager.cpp
+  )
+  target_compile_options(quickdial_launcher_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_launcher_tests PRIVATE
+    quickdial_core quickdial_background advapi32 comctl32 d2d1 dwrite dwmapi shcore)
 
   add_executable(quickdial_benchmarks
     benchmarks/PerformanceBenchmarks.cpp

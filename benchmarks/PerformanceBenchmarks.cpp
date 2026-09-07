@@ -30,6 +30,8 @@ constexpr int kStartupTrials = 10;
 constexpr int kShowTrials = 20;
 constexpr auto kReadyTimeout = std::chrono::seconds(5);
 constexpr auto kPresentationTimeout = std::chrono::seconds(2);
+constexpr auto kBackgroundTimeout = std::chrono::seconds(10);
+constexpr auto kSettledInterval = std::chrono::milliseconds(250);
 constexpr auto kIdleSampleDuration = std::chrono::seconds(3);
 
 // Performance contract for the personal Windows 11 x64 prototype.
@@ -62,9 +64,9 @@ struct HandleCloser {
 using UniqueHandle = std::unique_ptr<void, HandleCloser>;
 
 struct MemorySample {
-  double workingSetMb = 0.0;
-  double privateWorkingSetMb = 0.0;
-  double privateMb = 0.0;
+  double workingSetMb = -1.0;
+  double privateWorkingSetMb = -1.0;
+  double privateMb = -1.0;
 };
 
 struct ChildProcess {
@@ -78,6 +80,8 @@ struct BenchmarkResults {
   std::vector<double> startupTimesMs;
   double firstShowMs = 0.0;
   std::vector<double> warmShowTimesMs;
+  std::vector<double> shutdownTimesMs;
+  double discoverySettledMs = 0.0;
   MemorySample hiddenInitial;
   MemorySample visible;
   MemorySample hiddenAfterUse;
@@ -162,18 +166,22 @@ MemorySample ReadMemory(HANDLE process) {
     return {};
   }
 
-  std::vector<std::byte> workingSetBuffer(sizeof(ULONG_PTR));
-  auto* workingSet = reinterpret_cast<PSAPI_WORKING_SET_INFORMATION*>(workingSetBuffer.data());
-  if (!QueryWorkingSet(process, workingSet, static_cast<DWORD>(workingSetBuffer.size())) &&
-      GetLastError() == ERROR_BAD_LENGTH) {
-    const std::size_t requiredSize = sizeof(ULONG_PTR) +
-                                     workingSet->NumberOfEntries * sizeof(PSAPI_WORKING_SET_BLOCK);
-    workingSetBuffer.resize(requiredSize);
+  std::vector<ULONG_PTR> workingSetBuffer(1024);
+  PSAPI_WORKING_SET_INFORMATION* workingSet = nullptr;
+  bool sampled = false;
+  for (int attempt = 0; attempt < 5; ++attempt) {
     workingSet = reinterpret_cast<PSAPI_WORKING_SET_INFORMATION*>(workingSetBuffer.data());
+    if (QueryWorkingSet(process, workingSet, static_cast<DWORD>(workingSetBuffer.size() * sizeof(ULONG_PTR)))) {
+      sampled = true;
+      break;
+    }
+    if (GetLastError() != ERROR_BAD_LENGTH) break;
+    const std::size_t needed = workingSet->NumberOfEntries + 1024;
+    if (needed > 16'777'216) break;
+    workingSetBuffer.resize(std::max(workingSetBuffer.size() * 2, needed));
   }
-
   std::size_t privateResidentPages = 0;
-  if (QueryWorkingSet(process, workingSet, static_cast<DWORD>(workingSetBuffer.size()))) {
+  if (sampled) {
     for (ULONG_PTR index = 0; index < workingSet->NumberOfEntries; ++index) {
       if (workingSet->WorkingSetInfo[index].Shared == 0) {
         ++privateResidentPages;
@@ -186,26 +194,51 @@ MemorySample ReadMemory(HANDLE process) {
   constexpr double bytesPerMegabyte = 1024.0 * 1024.0;
   return {
       static_cast<double>(counters.WorkingSetSize) / bytesPerMegabyte,
-      static_cast<double>(privateResidentPages) * systemInfo.dwPageSize / bytesPerMegabyte,
+      sampled ? static_cast<double>(privateResidentPages) * systemInfo.dwPageSize / bytesPerMegabyte : -1.0,
       static_cast<double>(counters.PrivateUsage) / bytesPerMegabyte,
   };
 }
 
-bool WaitForWindowVisibility(HWND window, bool visible, std::chrono::milliseconds timeout) {
-  const auto deadline = Clock::now() + timeout;
+std::optional<DWORD_PTR> ReadBackgroundState(const ChildProcess& child) {
+  DWORD_PTR state = 0;
+  if (WaitForSingleObject(child.process.get(), 0) != WAIT_TIMEOUT ||
+      !SendMessageTimeoutW(child.window, quickdial::kMessageBenchmarkState, 0, 0,
+                           SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, &state) ||
+      (state & quickdial::kBenchmarkAvailable) == 0 || (state & quickdial::kBenchmarkFailed) != 0) {
+    return std::nullopt;
+  }
+  return state;
+}
+
+bool WaitForBackgroundIdle(const ChildProcess& child, bool visible) {
+  const auto deadline = Clock::now() + kBackgroundTimeout;
+  std::optional<Clock::time_point> idleSince;
   while (Clock::now() < deadline) {
-    if ((IsWindowVisible(window) != FALSE) == visible) {
+    const auto state = ReadBackgroundState(child);
+    if (!state || (IsWindowVisible(child.window) != FALSE) != visible) return false;
+    if ((*state & quickdial::kBenchmarkPending) != 0) {
+      idleSince.reset();
+    } else if (!idleSince) {
+      idleSince = Clock::now();
+    } else if (Clock::now() - *idleSince >= kSettledInterval) {
       return true;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  return (IsWindowVisible(window) != FALSE) == visible;
+  return false;
+}
+
+bool HideAndWait(const ChildProcess& child) {
+  DWORD_PTR ignored = 0;
+  return SendMessageTimeoutW(child.window, quickdial::kMessageHideLauncher, 0, 0,
+                             SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, &ignored) != 0 &&
+         WaitForBackgroundIdle(child, false);
 }
 
 ChildProcess LaunchQuickDial(
     const std::filesystem::path& applicationPath, HANDLE readyEvent,
     std::wstring_view readyEventName, std::wstring_view presentedEventName) {
-  ResetEvent(readyEvent);
+  if (!ResetEvent(readyEvent)) return {};
   std::wstring commandLine = Quote(applicationPath.wstring()) + L" --benchmark-events " +
                              Quote(readyEventName) + L" " + Quote(presentedEventName);
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
@@ -222,8 +255,9 @@ ChildProcess LaunchQuickDial(
   UniqueHandle thread(processInfo.hThread);
   UniqueHandle process(processInfo.hProcess);
 
-  const DWORD waitResult = WaitForSingleObject(
-      readyEvent, static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(kReadyTimeout).count()));
+  const HANDLE waitHandles[] = {readyEvent, process.get()};
+  const DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE,
+      static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(kReadyTimeout).count()));
   if (waitResult != WAIT_OBJECT_0) {
     TerminateProcess(process.get(), 3);
     WaitForSingleObject(process.get(), 1000);
@@ -234,6 +268,11 @@ ChildProcess LaunchQuickDial(
   const auto windowDeadline = Clock::now() + std::chrono::milliseconds(250);
   while (window == nullptr && Clock::now() < windowDeadline) {
     window = FindWindowW(quickdial::kWindowClassName, nullptr);
+    DWORD windowProcessId = 0;
+    if (window && (!GetWindowThreadProcessId(window, &windowProcessId) ||
+                   windowProcessId != processInfo.dwProcessId)) {
+      window = nullptr;
+    }
     if (window == nullptr) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -247,22 +286,31 @@ ChildProcess LaunchQuickDial(
   return child;
 }
 
-void CloseChild(ChildProcess& child) {
+std::optional<double> CloseChild(ChildProcess& child) {
   if (!child.process) {
-    return;
+    return std::nullopt;
   }
-  if (child.window != nullptr) {
-    PostMessageW(child.window, WM_CLOSE, 0, 0);
-  }
-  if (WaitForSingleObject(child.process.get(), 3000) != WAIT_OBJECT_0) {
-    TerminateProcess(child.process.get(), 4);
-    WaitForSingleObject(child.process.get(), 1000);
+  const auto started = Clock::now();
+  const bool closeRequested = WaitForSingleObject(child.process.get(), 0) == WAIT_TIMEOUT &&
+      child.window && PostMessageW(child.window, WM_CLOSE, 0, 0);
+  const bool exited = WaitForSingleObject(child.process.get(), 3000) == WAIT_OBJECT_0;
+  DWORD exitCode = 0;
+  const bool cleanExit = closeRequested && exited &&
+      GetExitCodeProcess(child.process.get(), &exitCode) && exitCode == 0;
+  const double elapsed = ElapsedMilliseconds(started, Clock::now());
+  if (!exited) {
+    std::cerr << "Launcher did not exit within 3 seconds; forced cleanup is a benchmark failure.\n";
+    if (!TerminateProcess(child.process.get(), 4) ||
+        WaitForSingleObject(child.process.get(), 1000) != WAIT_OBJECT_0) {
+      std::cerr << "Could not clean up benchmark child PID " << child.id << ".\n";
+    }
   }
   child.process.reset();
+  return cleanExit ? std::optional<double>(elapsed) : std::nullopt;
 }
 
 std::optional<double> ShowAndMeasure(HWND window, HANDLE presentedEvent) {
-  ResetEvent(presentedEvent);
+  if (!ResetEvent(presentedEvent)) return std::nullopt;
   const auto started = Clock::now();
   if (!PostMessageW(window, quickdial::kMessageShowLauncher, 0, 0)) {
     return std::nullopt;
@@ -270,7 +318,7 @@ std::optional<double> ShowAndMeasure(HWND window, HANDLE presentedEvent) {
   const DWORD waitResult = WaitForSingleObject(
       presentedEvent,
       static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(kPresentationTimeout).count()));
-  if (waitResult != WAIT_OBJECT_0) {
+  if (waitResult != WAIT_OBJECT_0 || !IsWindowVisible(window)) {
     return std::nullopt;
   }
   return ElapsedMilliseconds(started, Clock::now());
@@ -349,7 +397,9 @@ bool PrintAndEvaluate(const BenchmarkResults& results) {
 
   std::cout << "\nApplication Quick Dial performance contract\n";
   std::cout << "Fresh-process startup median: " << std::fixed << std::setprecision(2) << startupMedian << " ms\n";
-  std::cout << "Warm show median:            " << warmShowMedian << " ms\n\n";
+  std::cout << "Warm show median:            " << warmShowMedian << " ms\n";
+  std::cout << "Discovery settled after ready (includes 250 ms quiet): " << results.discoverySettledMs << " ms\n";
+  std::cout << "Graceful shutdown p95:       " << Percentile(results.shutdownTimesMs, 0.95) << " ms\n\n";
 
   bool passed = true;
   passed &= CheckMaximum("Fresh-process startup p95", startupP95, kStartupP95BudgetMs, "ms");
@@ -431,7 +481,13 @@ int main() {
     results.startupTimesMs.push_back(child.startupMs);
 
     if (trial == 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      const auto discoveryStarted = Clock::now();
+      if (!WaitForBackgroundIdle(child, false)) {
+        std::cerr << "Startup discovery failed or did not settle within 10 seconds.\n";
+        CloseChild(child);
+        return 2;
+      }
+      results.discoverySettledMs = ElapsedMilliseconds(discoveryStarted, Clock::now());
       results.hiddenInitial = ReadMemory(child.process.get());
 
       const auto firstShow = ShowAndMeasure(child.window, presentedEvent.get());
@@ -441,8 +497,11 @@ int main() {
         return 2;
       }
       results.firstShowMs = *firstShow;
-      PostMessageW(child.window, quickdial::kMessageHideLauncher, 0, 0);
-      WaitForWindowVisibility(child.window, false, std::chrono::milliseconds(250));
+      if (!WaitForBackgroundIdle(child, true) || !HideAndWait(child)) {
+        std::cerr << "First-show icon loading or hide did not complete successfully.\n";
+        CloseChild(child);
+        return 2;
+      }
 
       for (int showTrial = 0; showTrial < kShowTrials; ++showTrial) {
         const auto showTime = ShowAndMeasure(child.window, presentedEvent.get());
@@ -452,8 +511,11 @@ int main() {
           return 2;
         }
         results.warmShowTimesMs.push_back(*showTime);
-        PostMessageW(child.window, quickdial::kMessageHideLauncher, 0, 0);
-        WaitForWindowVisibility(child.window, false, std::chrono::milliseconds(250));
+        if (!WaitForBackgroundIdle(child, true) || !HideAndWait(child)) {
+          std::cerr << "Warm-show icon loading or hide did not complete successfully.\n";
+          CloseChild(child);
+          return 2;
+        }
       }
 
       if (!ShowAndMeasure(child.window, presentedEvent.get())) {
@@ -461,18 +523,41 @@ int main() {
         CloseChild(child);
         return 2;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      if (!WaitForBackgroundIdle(child, true)) {
+        std::cerr << "Visible launcher did not settle for its resource sample.\n";
+        CloseChild(child);
+        return 2;
+      }
       results.visible = ReadMemory(child.process.get());
       results.visibleIdleCpuMs = MeasureIdleCpu(child.process.get(), kIdleSampleDuration);
+      const auto visibleState = ReadBackgroundState(child);
+      if (!visibleState || (*visibleState & quickdial::kBenchmarkPending) != 0 || !IsWindowVisible(child.window)) {
+        std::cerr << "Visible idle sample was interrupted. Keep the benchmark launcher in the foreground.\n";
+        CloseChild(child);
+        return 2;
+      }
 
-      PostMessageW(child.window, quickdial::kMessageHideLauncher, 0, 0);
-      WaitForWindowVisibility(child.window, false, std::chrono::milliseconds(250));
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      if (!HideAndWait(child)) {
+        std::cerr << "Launcher did not hide and settle for its resource sample.\n";
+        CloseChild(child);
+        return 2;
+      }
       results.hiddenAfterUse = ReadMemory(child.process.get());
       results.hiddenIdleCpuMs = MeasureIdleCpu(child.process.get(), kIdleSampleDuration);
+      const auto hiddenState = ReadBackgroundState(child);
+      if (!hiddenState || (*hiddenState & quickdial::kBenchmarkPending) != 0 || IsWindowVisible(child.window)) {
+        std::cerr << "Hidden idle sample was interrupted.\n";
+        CloseChild(child);
+        return 2;
+      }
     }
 
-    CloseChild(child);
+    const auto shutdown = CloseChild(child);
+    if (!shutdown) {
+      std::cerr << "Benchmark launcher did not shut down normally.\n";
+      return 2;
+    }
+    results.shutdownTimesMs.push_back(*shutdown);
   }
 
   return PrintAndEvaluate(results) ? 0 : 1;

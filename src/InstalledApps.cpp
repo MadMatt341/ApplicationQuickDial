@@ -113,16 +113,23 @@ InstalledAppsResult DiscoverInstalledApplications() {
     return {{}, HResultMessage(L"Could not enumerate Windows' installed apps", result)};
   }
 
+  return ReadInstalledApplications(*enumerator.Get());
+}
+
+InstalledAppsResult ReadInstalledApplications(IEnumShellItems& enumerator) {
   std::vector<ApplicationEntry> applications;
   while (true) {
     ComPtr<IShellItem> item;
     ULONG fetched = 0;
-    result = enumerator->Next(1, item.ReleaseAndGetAddressOf(), &fetched);
-    if (result == S_FALSE || fetched == 0) {
-      break;
-    }
+    const HRESULT result = enumerator.Next(1, item.ReleaseAndGetAddressOf(), &fetched);
     if (FAILED(result)) {
       return {{}, HResultMessage(L"Could not finish enumerating Windows' installed apps", result)};
+    }
+    if (result == S_FALSE) {
+      break;
+    }
+    if (fetched != 1 || !item) {
+      return {{}, L"Windows returned an incomplete installed-app entry. Try Reload app list."};
     }
 
     PWSTR rawName = nullptr;

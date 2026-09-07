@@ -4,6 +4,12 @@
 
 This repository builds a Windows 11 x64 launcher in native C++20. Keep changes small and consistent with the existing Win32 design. Do not introduce a UI framework, background service, installer, or cross-platform abstraction unless the task requires it.
 
+## Ownership
+
+The user owns product decisions: what the launcher does, its interactions, appearance, and feel. The agent owns implementation, reliability, performance, and test coverage, and should improve those autonomously within the agreed product behavior. Bring changes to behavior or feel, and engineering tradeoffs that affect them, to the user before implementing them. Routine internal fixes and verification do not require renewed approval.
+
+## Before changing code
+
 Read these before changing code:
 
 - `README.md` for user-visible behavior and the catalog format.

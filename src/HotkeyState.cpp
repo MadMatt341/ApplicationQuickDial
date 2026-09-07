@@ -21,16 +21,15 @@ HotkeyDisposition HotkeyState::Handle(std::uint32_t virtualKey, bool keyDown, bo
     return HotkeyDisposition::Pass;
   }
 
-  if (keyDown && (leftWindowsDown_ || rightWindowsDown_)) {
-    if (!chordActive_) {
-      chordActive_ = true;
-      return HotkeyDisposition::TriggerAndSuppress;
+  if (chordActive_) {
+    if (!keyDown) {
+      chordActive_ = false;
     }
     return HotkeyDisposition::Suppress;
   }
-  if (!keyDown && chordActive_) {
-    chordActive_ = false;
-    return HotkeyDisposition::Suppress;
+  if (keyDown && (leftWindowsDown_ || rightWindowsDown_)) {
+    chordActive_ = true;
+    return HotkeyDisposition::TriggerAndSuppress;
   }
   return HotkeyDisposition::Pass;
 }

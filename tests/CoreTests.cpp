@@ -4,6 +4,8 @@
 #include "Search.h"
 
 #include <windows.h>
+#include <shobjidl.h>
+#include <wrl.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -252,6 +254,85 @@ void TestHotkeyState() {
   Check(state.Handle(VK_LWIN, true, true) == HotkeyDisposition::Pass, "injected Windows key is ignored");
   Check(state.Handle(VK_SPACE, true, true) == HotkeyDisposition::Pass, "injected Space key is ignored");
   Check(state.Handle(0xE8, true, true) == HotkeyDisposition::Pass, "injected shell mask key is ignored");
+
+  for (const auto windowsKey : {VK_LWIN, VK_RWIN}) {
+    quickdial::HotkeyState releaseOrder;
+    releaseOrder.Handle(windowsKey, true);
+    Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,
+          "either Windows key starts a fresh chord");
+    releaseOrder.Handle(windowsKey, false);
+    Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::Suppress,
+          "Space repeats stay suppressed when Windows is released first");
+    Check(releaseOrder.Handle(VK_SPACE, false, true) == HotkeyDisposition::Pass,
+          "injected Space release does not end the physical chord");
+    Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::Suppress,
+          "injected release does not allow physical repeats through");
+    Check(releaseOrder.Handle(VK_SPACE, false) == HotkeyDisposition::Suppress,
+          "Space release remains suppressed after releasing Windows first");
+    Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "ordinary Space works after the chord ends");
+    releaseOrder.Handle(VK_SPACE, false);
+    releaseOrder.Handle(windowsKey, true);
+    Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,
+          "a new chord retriggers after Windows-first release");
+  }
+}
+
+class TestShellItem final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IShellItem> {
+ public:
+  HRESULT STDMETHODCALLTYPE BindToHandler(IBindCtx*, REFGUID, REFIID, void**) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetParent(IShellItem**) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetDisplayName(SIGDN kind, PWSTR* name) override {
+    const wchar_t* displayName = kind == SIGDN_NORMALDISPLAY ? L"Test app" : L"test.exe";
+    const auto bytes = (wcslen(displayName) + 1) * sizeof(wchar_t);
+    *name = static_cast<PWSTR>(CoTaskMemAlloc(bytes));
+    if (*name == nullptr) return E_OUTOFMEMORY;
+    memcpy(*name, displayName, bytes);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetAttributes(SFGAOF, SFGAOF*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE Compare(IShellItem*, SICHINTF, int*) override { return E_NOTIMPL; }
+};
+
+class TestAppEnumerator final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IEnumShellItems> {
+ public:
+  TestAppEnumerator(int items, HRESULT finalResult) : remaining_(items), finalResult_(finalResult) {}
+  HRESULT STDMETHODCALLTYPE Next(ULONG, IShellItem** item, ULONG* fetched) override {
+    *item = nullptr;
+    *fetched = 0;
+    if (remaining_-- > 0) {
+      *fetched = 1;
+      return Microsoft::WRL::Make<TestShellItem>().CopyTo(item);
+    }
+    return finalResult_;
+  }
+  HRESULT STDMETHODCALLTYPE Skip(ULONG) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE Reset() override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE Clone(IEnumShellItems**) override { return E_NOTIMPL; }
+ private:
+  int remaining_;
+  HRESULT finalResult_;
+};
+
+void TestDiscoveryFailures() {
+  for (const int validItems : {0, 1}) {
+    auto enumerator = Microsoft::WRL::Make<TestAppEnumerator>(validItems, E_FAIL);
+    const auto result = quickdial::ReadInstalledApplications(*enumerator.Get());
+    Check(!result && !result.error.empty(), "enumeration failure is reported even with zero fetched items");
+    Check(result.applications.empty(), "failed discovery never publishes a partial app list");
+  }
+  auto empty = Microsoft::WRL::Make<TestAppEnumerator>(0, S_FALSE);
+  Check(static_cast<bool>(quickdial::ReadInstalledApplications(*empty.Get())),
+        "normal enumeration exhaustion is a successful empty discovery");
+  auto complete = Microsoft::WRL::Make<TestAppEnumerator>(1, S_FALSE);
+  const auto result = quickdial::ReadInstalledApplications(*complete.Get());
+  Check(result && result.applications.size() == 1 && result.applications[0].target == L"test.exe",
+        "completed enumeration publishes its entries");
+  auto incomplete = Microsoft::WRL::Make<TestAppEnumerator>(0, S_OK);
+  Check(!quickdial::ReadInstalledApplications(*incomplete.Get()),
+        "success without a fetched item is rejected instead of publishing an empty list");
 }
 
 }  // namespace
@@ -277,6 +358,7 @@ int main(int argc, char* argv[]) {
   TestInstalledApplicationMerge();
   TestSearchRanking();
   TestHotkeyState();
+  TestDiscoveryFailures();
 
   if (failures == 0) {
     std::cout << "All quickdial core tests passed.\n";

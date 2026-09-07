@@ -30,6 +30,9 @@ The targets are:
 - `quickdial_core`: catalog parsing, installed-app discovery/merge, search, and hotkey state; linked by both the application and tests.
 - `ApplicationQuickDial`: Windows GUI executable and system integration.
 - `quickdial_tests`: small assertion-based test executable registered with CTest.
+- `quickdial_background`: bounded background dispatch and icon decoding, shared by the app and background tests.
+- `quickdial_background_tests`: CTest coverage for concurrency limits, shutdown with blocked work, late completions, handle retention, and image downscaling.
+- `quickdial_launcher_tests`: explicit desktop integration checks using an isolated temporary catalog; briefly shows a test launcher and exercises tray restoration, catalog completion, benchmark state, and 140 distinct icon-cache entries.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
 
@@ -39,12 +42,24 @@ To inspect the Windows Apps-folder discovery output without starting the launche
 .\build\Release\quickdial_tests.exe --list-installed
 ```
 
+With a normal interactive Windows desktop, run the launcher integration checks separately:
+
+```powershell
+.\build\Release\quickdial_launcher_tests.exe
+```
+
+These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch target applications, or restart Explorer. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window.
+
+The cache stress check uses a generated 32-pixel BMP and distinct application targets. It verifies eviction at 128 sources, reuse ordering, reloading an evicted source, discarding results from before a refresh, and reusing pixels after releasing the render target. It complements the performance runner's repeated opens of the same six results; neither test substitutes for long-duration use across arbitrary third-party Shell providers.
+
 ## Where to make a change
 
 | Change | Primary files | Also check |
 |---|---|---|
 | Catalog field or validation | `src/Catalog.h`, `src/Catalog.cpp` | `tests/CoreTests.cpp`, `README.md`, `docs/architecture.md` |
 | Installed-app discovery or merge | `src/InstalledApps.*`, `src/LauncherApp.cpp` | catalog tests, tray reload, discovered app launches |
+| Background lifetime or limits | `src/BackgroundTasks.*` | `tests/BackgroundTests.cpp`, shutdown during stalled work |
+| Icon decoding and source cache | `src/IconLoader.*`, `src/LauncherApp.cpp` | background tests, custom images, repeated reload/open |
 | Search scoring or result limit | `src/Search.cpp`, `src/LauncherApp.cpp` | `tests/CoreTests.cpp` |
 | Global shortcut behavior | `src/HotkeyState.*`, `src/HookManager.*` | `src/AppMessages.h`, hotkey tests, manual shortcut checks |
 | Window size, rows, colors, or drawing | `src/LauncherApp.cpp` | light/dark theme and mixed-DPI checks |
@@ -72,12 +87,14 @@ Run only the sections affected by a change. Before testing, exit any installed o
 1. Start the executable and confirm it appears in the notification area without a taskbar window.
 2. Start it a second time and confirm the existing instance opens and the second process exits.
 3. Exit from the tray menu and confirm the tray icon disappears.
+4. Confirm tray restoration with `quickdial_launcher_tests.exe`; no Explorer restart is required.
 
 ### Shortcut and focus
 
 1. Press left `Win+Space` and right `Win+Space`; each should toggle the launcher once.
 2. Hold Space to check that key repeat does not toggle repeatedly.
 3. Release Windows after the chord and confirm Start does not open.
+   Also release Windows first while continuing to hold Space: repeats must remain suppressed until Space is released.
 4. Check that unrelated Windows shortcuts still work.
 5. Press Escape and click another window; either action should hide the launcher.
 
@@ -91,6 +108,7 @@ Run only the sections affected by a change. Before testing, exit any installed o
 6. With `discoverInstalled` enabled, confirm an app not present in JSON is searchable after startup or tray reload.
 7. Add its name or AppUserModelID to `hiddenApplications`, reload, and confirm it is excluded.
 8. On a localized Windows installation, confirm an English component of an AppUserModelID or executable name (for example, `calc`) finds the localized application.
+9. Type and select a result during discovery/reload; completion must preserve both. A failed discovery must retain the last successful installed-app list. These completion paths are covered by `quickdial_launcher_tests.exe` with deterministic results.
 
 ### Launching and icons
 
@@ -99,6 +117,9 @@ Run only the sections affected by a change. Before testing, exit any installed o
 3. Test a document or URL handled through a file association.
 4. Test an explicit icon path, shell-derived icon, and invalid icon fallback.
 5. Confirm a failed target leaves the launcher open with an error.
+6. Use a large custom image and confirm the search surface remains responsive while its scaled icon loads. Reopening should reuse cached pixels; explicit reload refreshes them.
+7. Exit during icon loading and discovery. The process must exit promptly even if a Shell operation has stalled; `quickdial_background_tests` covers this using blocked work.
+8. Check a multi-resolution ICO at 100%, 125%, 150%, and 200% scale: it should use a suitable frame and have sharp edges. Check wide and tall custom images for centered, undistorted proportions and transparent edges in both themes. The background suite also checks ICO frame selection and transparent-color filtering.
 
 ### Window presentation
 

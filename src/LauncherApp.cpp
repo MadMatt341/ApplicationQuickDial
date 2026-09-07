@@ -1,6 +1,7 @@
 #include "LauncherApp.h"
 
 #include "AppMessages.h"
+#include "BackgroundTasks.h"
 #include "HookManager.h"
 #include "InstalledApps.h"
 #include "LauncherVisualStyle.h"
@@ -19,6 +20,9 @@
 #include <cmath>
 #include <cwchar>
 #include <string_view>
+#include <utility>
+
+#include <winrt/base.h>
 
 namespace quickdial {
 namespace {
@@ -33,11 +37,9 @@ constexpr UINT kCommandStartWithWindows = 1004;
 constexpr UINT kCommandExit = 1005;
 
 constexpr std::size_t kMaximumResults = 6;
-
-struct LoadedShellIcon {
-  std::wstring target;
-  HBITMAP bitmap = nullptr;
-};
+constexpr UINT_PTR kTrayRetryTimer = 1;
+constexpr UINT_PTR kBackgroundTimer = 2;
+constexpr std::size_t kMaximumIconSources = 128;
 
 float ScaleForDpi(float value, UINT dpi) {
   return value * static_cast<float>(dpi) / 96.0f;
@@ -119,35 +121,13 @@ bool ReadLightThemePreference() {
   return result == ERROR_SUCCESS && value != 0;
 }
 
-HBITMAP LoadShellIconBitmap(const std::wstring& target) {
-  ComPtr<IShellItem> shellItem;
-  if (FAILED(SHCreateItemFromParsingName(target.c_str(), nullptr, IID_PPV_ARGS(&shellItem)))) {
-    return nullptr;
-  }
-  ComPtr<IShellItemImageFactory> imageFactory;
-  if (FAILED(shellItem.As(&imageFactory))) {
-    return nullptr;
-  }
-  HBITMAP bitmap = nullptr;
-  const SIZE requestedSize{32, 32};
-  if (FAILED(imageFactory->GetImage(requestedSize, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &bitmap))) {
-    return nullptr;
-  }
-  return bitmap;
-}
-
 }  // namespace
 
-LauncherApp::LauncherApp(HANDLE benchmarkPresentedEvent)
-    : benchmarkPresentedEvent_(benchmarkPresentedEvent) {}
+LauncherApp::LauncherApp(HANDLE benchmarkPresentedEvent, std::filesystem::path catalogPath)
+    : benchmarkPresentedEvent_(benchmarkPresentedEvent), catalogPath_(std::move(catalogPath)) {}
 
 LauncherApp::~LauncherApp() {
-  shuttingDown_ = true;
-  for (auto& thread : iconLoaderThreads_) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
+  StopBackgroundTasks();
   if (hookManager_) {
     hookManager_->Stop();
   }
@@ -159,17 +139,11 @@ LauncherApp::~LauncherApp() {
   if (editBackgroundBrush_ != nullptr) {
     DeleteObject(editBackgroundBrush_);
   }
-  for (const auto& [target, bitmap] : shellIconSources_) {
-    static_cast<void>(target);
-    if (bitmap != nullptr) {
-      DeleteObject(bitmap);
-    }
-  }
 }
 
 bool LauncherApp::Initialize(HINSTANCE instance) {
   instance_ = instance;
-  catalogPath_ = GetCatalogPath();
+  if (catalogPath_.empty()) catalogPath_ = GetCatalogPath();
 
   INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&controls);
@@ -178,13 +152,19 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
     return false;
   }
 
-  ReloadCatalog(true);
+  iconTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 2, 32);
+  discoveryTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 1, 1);
+  taskbarCreatedMessage_ = RegisterWindowMessageW(L"TaskbarCreated");
+  if (taskbarCreatedMessage_ == 0) {
+    return false;
+  }
   AddTrayIcon();
 
   hookManager_ = std::make_unique<HookManager>(window_);
   if (!hookManager_->Start()) {
     ShowNotification(L"Application Quick Dial", L"Win+Space could not be captured. Use the tray icon to open the launcher.");
   }
+  ReloadCatalog();
   return true;
 }
 
@@ -208,16 +188,6 @@ bool LauncherApp::CreateFactories() {
   if (FAILED(result)) {
     return false;
   }
-  result = CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER,
-                            IID_PPV_ARGS(wicFactory_.ReleaseAndGetAddressOf()));
-  if (FAILED(result)) {
-    result = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                              IID_PPV_ARGS(wicFactory_.ReleaseAndGetAddressOf()));
-  }
-  if (FAILED(result)) {
-    return false;
-  }
-
   fontFamily_ = visuals::ResolveFontFamily(dwriteFactory_.Get());
   result = dwriteFactory_->CreateTextFormat(
       fontFamily_.c_str(), nullptr, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL,
@@ -338,6 +308,9 @@ void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
 }
 
 void LauncherApp::AddTrayIcon() {
+  if (trayIconAdded_) {
+    return;
+  }
   NOTIFYICONDATAW icon{};
   icon.cbSize = sizeof(icon);
   icon.hWnd = window_;
@@ -346,7 +319,13 @@ void LauncherApp::AddTrayIcon() {
   icon.uCallbackMessage = kMessageTray;
   icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   wcscpy_s(icon.szTip, L"Application Quick Dial");
-  trayIconAdded_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+  trayIconAdded_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE ||
+                   Shell_NotifyIconW(NIM_MODIFY, &icon) != FALSE;
+  if (trayIconAdded_) {
+    KillTimer(window_, kTrayRetryTimer);
+  } else if (SetTimer(window_, kTrayRetryTimer, 2000, nullptr) == 0) {
+    launchError_ = L"Could not restore the tray icon. Restart Quick Dial when Explorer is available.";
+  }
 }
 
 void LauncherApp::RemoveTrayIcon() {
@@ -396,16 +375,26 @@ void LauncherApp::HandleTrayCommand(UINT command) {
       OpenCatalog();
       break;
     case kCommandReloadCatalog:
+      ++iconGeneration_;
+      iconSources_.clear();
+      pendingIconTargets_.clear();
+      notifyAfterDiscovery_ = true;
       ReloadCatalog(true);
       UpdateResults();
       if (IsWindowVisible(window_)) {
         ResizeAndPosition(false);
         InvalidateRect(window_, nullptr, FALSE);
       }
-      if (catalogError_.empty()) {
-        ShowNotification(L"Application Quick Dial", L"The app list was reloaded.");
-      } else {
+      if (!catalogFileError_.empty()) {
+        notifyAfterDiscovery_ = false;
         ShowNotification(L"Could not reload app list", catalogError_);
+      } else if (!discoveryPending_) {
+        notifyAfterDiscovery_ = false;
+        if (catalogError_.empty()) {
+          ShowNotification(L"Application Quick Dial", L"The app list was reloaded.");
+        } else {
+          ShowNotification(L"Could not reload app list", catalogError_);
+        }
       }
       break;
     case kCommandStartWithWindows: {
@@ -474,36 +463,144 @@ void LauncherApp::ToggleLauncher() {
 void LauncherApp::ReloadCatalog(bool refreshInstalledApplications) {
   std::wstring createError;
   if (!EnsureDefaultCatalog(catalogPath_, createError)) {
-    catalogError_ = createError;
+    catalogFileError_ = catalogError_ = createError;
     return;
   }
 
   CatalogResult result = LoadCatalogFile(catalogPath_);
   if (!result) {
-    catalogError_ = result.error;
+    catalogFileError_ = catalogError_ = result.error;
     return;
   }
 
-  Catalog configured = std::move(*result.catalog);
-  if (configured.discoverInstalled &&
-      (refreshInstalledApplications || !installedApplicationsLoaded_)) {
-    InstalledAppsResult installed = DiscoverInstalledApplications();
-    if (installed) {
-      installedApplications_ = std::move(installed.applications);
-      installedApplicationsLoaded_ = true;
-      installedApplicationsError_.clear();
+  const bool enableDiscovery = !configuredCatalog_.discoverInstalled && result.catalog->discoverInstalled;
+  configuredCatalog_ = std::move(*result.catalog);
+  catalogFileError_.clear();
+  hasValidCatalog_ = true;
+  RebuildCatalog();
+  if (configuredCatalog_.discoverInstalled &&
+      (refreshInstalledApplications || enableDiscovery || !discoveryRequested_)) {
+    if (discoveryPending_) {
+      discoveryAgain_ = true;
     } else {
-      installedApplicationsError_ = std::move(installed.error);
+      RequestInstalledApplications();
     }
   }
+}
 
-  catalog_ = configured.discoverInstalled
-                 ? MergeInstalledApplications(std::move(configured), installedApplications_)
-                 : std::move(configured);
-  hasValidCatalog_ = true;
+void LauncherApp::RebuildCatalog() {
+  // Preserve selection and query if discovery completes while the user is typing.
+  std::wstring selectedTarget;
+  if (selectedResult_ < results_.size() && results_[selectedResult_] < catalog_.applications.size()) {
+    selectedTarget = catalog_.applications[results_[selectedResult_]].target;
+  }
+  catalog_ = MergeInstalledApplications(configuredCatalog_, installedApplications_);
   catalogError_ = catalog_.discoverInstalled ? installedApplicationsError_ : std::wstring{};
   iconCache_.clear();
   iconAttempted_.clear();
+  UpdateResults();
+  for (std::size_t index = 0; index < results_.size(); ++index) {
+    if (catalog_.applications[results_[index]].target == selectedTarget) {
+      selectedResult_ = index;
+      break;
+    }
+  }
+}
+
+void LauncherApp::RequestInstalledApplications() {
+  discoveryRequested_ = true;
+  discoveryPending_ = discoveryTasks_->Submit([this]() -> BackgroundTasks::Completion {
+    InstalledAppsResult installed;
+    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(apartment)) {
+      installed.error = L"Could not initialize Windows app discovery: " + WindowsErrorMessage(apartment);
+    } else {
+      try {
+        installed = DiscoverInstalledApplications();
+      } catch (...) {
+        installed.error = L"Windows app discovery failed. Try Reload app list.";
+      }
+      CoUninitialize();
+    }
+    // Only the completion dereferences this. Stop discards it before HWND teardown.
+    return [this, installed = std::move(installed)]() mutable {
+      ApplyInstalledApplications(std::move(installed));
+    };
+  });
+  if (!discoveryPending_) {
+    installedApplicationsError_ = L"Could not start Windows app discovery. Try Reload app list.";
+    catalogError_ = installedApplicationsError_;
+  } else {
+    StartBackgroundTimer();
+  }
+}
+
+void LauncherApp::ApplyInstalledApplications(InstalledAppsResult installed) {
+  discoveryPending_ = false;
+  if (installed) {
+    installedApplications_ = std::move(installed.applications);
+    installedApplicationsError_.clear();
+  } else {
+    installedApplicationsError_ = std::move(installed.error);
+  }
+  if (catalogFileError_.empty()) {
+    RebuildCatalog();
+  }
+  const bool refreshAgain = std::exchange(discoveryAgain_, false);
+  if (refreshAgain && configuredCatalog_.discoverInstalled) {
+    RequestInstalledApplications();
+  } else if (notifyAfterDiscovery_) {
+    notifyAfterDiscovery_ = false;
+    ShowNotification(L"Application Quick Dial",
+                     catalogError_.empty() ? L"The app list was reloaded." : catalogError_);
+  } else if (!installedApplicationsError_.empty() && configuredCatalog_.discoverInstalled) {
+    ShowNotification(L"Could not discover installed apps", installedApplicationsError_);
+  }
+}
+
+void LauncherApp::StartBackgroundTimer() {
+  if (SetTimer(window_, kBackgroundTimer, 100, nullptr) == 0) {
+    launchError_ = L"Could not monitor background work. Try reopening Quick Dial.";
+  }
+}
+
+void LauncherApp::ProcessBackgroundResults() {
+  discoveryTasks_->Dispatch();
+  const std::size_t completedIcons = iconTasks_->Dispatch();
+  if (completedIcons != 0 && IsWindowVisible(window_)) {
+    // Even discarded old-generation results free queue slots. Retry any icons
+    // that could not be queued during a reload because the queue was full.
+    InvalidateRect(window_, nullptr, FALSE);
+  }
+  if (discoveryTasks_->TakeFailure()) {
+    installedApplicationsError_ = L"Windows app discovery failed. Try Reload app list.";
+    discoveryPending_ = false;
+    if (catalogFileError_.empty()) RebuildCatalog();
+    ShowNotification(L"Application Quick Dial", installedApplicationsError_);
+  }
+  if (iconTasks_->TakeFailure()) {
+    pendingIconTargets_.clear();
+    iconCache_.clear();
+    iconAttempted_.clear();
+    launchError_ = L"Some icons could not be loaded. Try Reload app list.";
+    ShowNotification(L"Application Quick Dial", launchError_);
+    if (IsWindowVisible(window_)) {
+      ResizeAndPosition(false);
+      InvalidateRect(window_, nullptr, FALSE);
+    }
+  }
+  if (!discoveryTasks_->HasPending() && !iconTasks_->HasPending()) {
+    KillTimer(window_, kBackgroundTimer);
+  }
+}
+
+void LauncherApp::StopBackgroundTasks() {
+  if (iconTasks_) iconTasks_->Stop();
+  if (discoveryTasks_) discoveryTasks_->Stop();
+  if (window_) {
+    KillTimer(window_, kBackgroundTimer);
+    KillTimer(window_, kTrayRetryTimer);
+  }
 }
 
 void LauncherApp::UpdateResults() {
@@ -686,7 +783,19 @@ void LauncherApp::Render() {
           visuals::kApplicationIconLeft + visuals::kApplicationIconSize,
           iconTop + visuals::kApplicationIconSize);
       if (icon) {
-        renderTarget_->DrawBitmap(icon.Get(), iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        // Preserve the source proportions and place every edge on a physical
+        // pixel, including at fractional monitor scales such as 125% and 150%.
+        const auto pixels = icon->GetPixelSize();
+        const float slot = static_cast<float>(ScaleForDpiInt(visuals::kApplicationIconSize, dpi_));
+        const float scale = slot / static_cast<float>(std::max(pixels.width, pixels.height));
+        const float width = std::max(1.0f, std::round(pixels.width * scale));
+        const float height = std::max(1.0f, std::round(pixels.height * scale));
+        const float left = std::round(ScaleForDpi(iconBounds.left, dpi_) + (slot - width) / 2.0f);
+        const float topPixel = std::round(ScaleForDpi(iconBounds.top, dpi_) + (slot - height) / 2.0f);
+        const float dipPerPixel = 96.0f / static_cast<float>(dpi_);
+        const auto imageBounds = D2D1::RectF(left * dipPerPixel, topPixel * dipPerPixel,
+            (left + width) * dipPerPixel, (topPixel + height) * dipPerPixel);
+        renderTarget_->DrawBitmap(icon.Get(), imageBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
       } else {
         renderTarget_->DrawRoundedRectangle(
             D2D1::RoundedRect(iconBounds, visuals::kSelectionCornerRadius, visuals::kSelectionCornerRadius),
@@ -735,128 +844,60 @@ ComPtr<ID2D1Bitmap> LauncherApp::GetApplicationIcon(std::size_t applicationIndex
   iconAttempted_[applicationIndex] = true;
 
   const ApplicationEntry& application = catalog_.applications[applicationIndex];
-  if (application.icon) {
-    iconCache_[applicationIndex] = LoadBitmapFromFile(*application.icon);
-  }
-  if (!iconCache_[applicationIndex]) {
-    iconCache_[applicationIndex] = LoadBitmapFromShellTarget(application.target);
-  }
-  if (!iconCache_[applicationIndex]) {
-    if (!failedIconTargets_.contains(application.target)) {
-      QueueShellIconLoad(application.target);
-      return {};
-    }
-  }
-  iconAttempted_[applicationIndex] = true;
-  return iconCache_[applicationIndex];
-}
-
-ComPtr<ID2D1Bitmap> LauncherApp::LoadBitmapFromFile(const std::wstring& path) {
-  ComPtr<IWICBitmapDecoder> decoder;
-  HRESULT result = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                          WICDecodeMetadataCacheOnLoad, &decoder);
-  if (FAILED(result)) {
-    return {};
-  }
-  ComPtr<IWICBitmapFrameDecode> frame;
-  result = decoder->GetFrame(0, &frame);
-  if (FAILED(result)) {
-    return {};
-  }
-  ComPtr<IWICFormatConverter> converter;
-  result = wicFactory_->CreateFormatConverter(&converter);
-  if (FAILED(result)) {
-    return {};
-  }
-  result = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,
-                                 0.0, WICBitmapPaletteTypeCustom);
-  if (FAILED(result)) {
-    return {};
-  }
-  ComPtr<ID2D1Bitmap> bitmap;
-  if (FAILED(renderTarget_->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &bitmap))) {
-    return {};
-  }
-  return bitmap;
-}
-
-ComPtr<ID2D1Bitmap> LauncherApp::LoadBitmapFromShellTarget(const std::wstring& target) {
-  const auto source = shellIconSources_.find(target);
-  if (source == shellIconSources_.end() || source->second == nullptr) {
-    return {};
-  }
-
-  ComPtr<IWICBitmap> wicBitmap;
-  const HRESULT result = wicFactory_->CreateBitmapFromHBITMAP(
-      source->second, nullptr, WICBitmapUsePremultipliedAlpha, &wicBitmap);
-  if (FAILED(result)) {
-    return {};
-  }
-  ComPtr<ID2D1Bitmap> bitmap;
-  if (FAILED(renderTarget_->CreateBitmapFromWicBitmap(wicBitmap.Get(), nullptr, &bitmap))) {
-    return {};
-  }
-  return bitmap;
-}
-
-void LauncherApp::QueueShellIconLoad(const std::wstring& target) {
-  if (pendingIconTargets_.contains(target) || shellIconSources_.contains(target) ||
-      failedIconTargets_.contains(target)) {
-    return;
-  }
-  pendingIconTargets_.insert(target);
-  iconLoaderThreads_.emplace_back([this, target] {
-    const HRESULT apartmentResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    HBITMAP bitmap = LoadShellIconBitmap(target);
-    if (SUCCEEDED(apartmentResult)) {
-      CoUninitialize();
-    }
-
-    if (shuttingDown_) {
-      if (bitmap != nullptr) {
-        DeleteObject(bitmap);
+  const std::wstring key = IconKey(application);
+  const auto source = iconSources_.find(key);
+  if (source != iconSources_.end()) {
+    source->second.lastUse = ++iconUseCounter_;
+    const IconImage& image = source->second.image;
+    if (!image.pixels.empty()) {
+      const auto properties = D2D1::BitmapProperties(
+          D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+      const HRESULT result = renderTarget_->CreateBitmap(
+          D2D1::SizeU(image.width, image.height), image.pixels.data(), image.width * 4,
+          properties, &iconCache_[applicationIndex]);
+      if (FAILED(result)) {
+        iconAttempted_[applicationIndex] = false;
       }
-      return;
     }
-
-    auto* result = new LoadedShellIcon{target, bitmap};
-    if (!PostMessageW(window_, kMessageIconLoaded, 0, reinterpret_cast<LPARAM>(result))) {
-      if (bitmap != nullptr) {
-        DeleteObject(bitmap);
+    return iconCache_[applicationIndex];
+  }
+  if (pendingIconTargets_.contains(key)) {
+    return {};
+  }
+  const UINT size = std::clamp(static_cast<UINT>(ScaleForDpiInt(visuals::kApplicationIconSize, dpi_)), 1U, 96U);
+  const bool submitted = iconTasks_->Submit(
+      [this, key, target = application.target, icon = application.icon, size, generation = iconGeneration_]() {
+    IconImage image = LoadApplicationIcon(target, icon, size);
+    return [this, key, generation, image = std::move(image)]() mutable {
+      if (generation != iconGeneration_) {
+        return;
       }
-      delete result;
-    }
+      pendingIconTargets_.erase(key);
+      if (iconSources_.size() >= kMaximumIconSources) {
+        const auto oldest = std::min_element(iconSources_.begin(), iconSources_.end(),
+            [](const auto& left, const auto& right) { return left.second.lastUse < right.second.lastUse; });
+        iconSources_.erase(oldest);
+      }
+      iconSources_.insert_or_assign(key, CachedIcon{std::move(image), ++iconUseCounter_});
+      iconCache_.clear();
+      iconAttempted_.clear();
+      if (IsWindowVisible(window_)) {
+        InvalidateRect(window_, nullptr, FALSE);
+      }
+    };
   });
+  if (submitted) {
+    pendingIconTargets_.insert(key);
+    StartBackgroundTimer();
+  } else {
+    // A full queue is retried on the next completion/repaint, without growing it.
+    iconAttempted_[applicationIndex] = false;
+  }
+  return {};
 }
 
-void LauncherApp::HandleLoadedShellIcon(LPARAM payload) {
-  std::unique_ptr<LoadedShellIcon> result(reinterpret_cast<LoadedShellIcon*>(payload));
-  if (!result) {
-    return;
-  }
-  pendingIconTargets_.erase(result->target);
-  if (result->bitmap == nullptr) {
-    failedIconTargets_.insert(result->target);
-  } else {
-    auto existing = shellIconSources_.find(result->target);
-    if (existing != shellIconSources_.end() && existing->second != nullptr) {
-      DeleteObject(existing->second);
-    }
-    shellIconSources_[result->target] = result->bitmap;
-    result->bitmap = nullptr;
-  }
-
-  if (iconCache_.size() == catalog_.applications.size()) {
-    for (std::size_t index = 0; index < catalog_.applications.size(); ++index) {
-      if (catalog_.applications[index].target == result->target) {
-        iconCache_[index].Reset();
-        iconAttempted_[index] = false;
-      }
-    }
-  }
-  if (IsWindowVisible(window_)) {
-    InvalidateRect(window_, nullptr, FALSE);
-  }
+std::wstring LauncherApp::IconKey(const ApplicationEntry& application) const {
+  return application.target + L'\0' + application.icon.value_or(L"") + L'\0' + std::to_wstring(dpi_);
 }
 
 LRESULT CALLBACK LauncherApp::WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -901,6 +942,11 @@ LRESULT CALLBACK LauncherApp::EditProcedure(
 }
 
 LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+  if (taskbarCreatedMessage_ != 0 && message == taskbarCreatedMessage_) {
+    trayIconAdded_ = false;
+    AddTrayIcon();
+    return 0;
+  }
   switch (message) {
     case WM_CREATE:
       edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
@@ -946,6 +992,8 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case WM_DPICHANGED: {
       dpi_ = HIWORD(wParam);
+      iconCache_.clear();
+      iconAttempted_.clear();
       const auto* suggested = reinterpret_cast<const RECT*>(lParam);
       SetWindowPos(window_, nullptr, suggested->left, suggested->top,
                    suggested->right - suggested->left, suggested->bottom - suggested->top,
@@ -989,8 +1037,28 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       HideLauncher();
       return 0;
 
-    case kMessageIconLoaded:
-      HandleLoadedShellIcon(lParam);
+    case kMessageBackgroundComplete:
+      ProcessBackgroundResults();
+      return 0;
+
+    case kMessageBenchmarkState: {
+      if (!benchmarkPresentedEvent_) return 0;
+      LRESULT state = kBenchmarkAvailable;
+      if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ ||
+          discoveryTasks_->HasPending() || iconTasks_->HasPending() ||
+          (IsWindowVisible(window_) && GetUpdateRect(window_, nullptr, FALSE))) {
+        state |= kBenchmarkPending;
+      }
+      if (!catalogError_.empty() || !launchError_.empty()) state |= kBenchmarkFailed;
+      return state;
+    }
+
+    case WM_TIMER:
+      if (wParam == kTrayRetryTimer) {
+        AddTrayIcon();
+      } else if (wParam == kBackgroundTimer) {
+        ProcessBackgroundResults();
+      }
       return 0;
 
     case kMessageTray:
@@ -1005,6 +1073,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       return TRUE;
 
     case WM_DESTROY:
+      StopBackgroundTasks();
       if (hookManager_) {
         hookManager_->Stop();
       }

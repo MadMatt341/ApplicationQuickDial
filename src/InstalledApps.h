@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct IEnumShellItems;
+
 namespace quickdial {
 
 struct InstalledAppsResult {
@@ -15,6 +17,7 @@ struct InstalledAppsResult {
 };
 
 InstalledAppsResult DiscoverInstalledApplications();
+InstalledAppsResult ReadInstalledApplications(IEnumShellItems& enumerator);
 Catalog MergeInstalledApplications(Catalog configured, std::vector<ApplicationEntry> installed);
 
 }  // namespace quickdial

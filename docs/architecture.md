@@ -2,12 +2,13 @@
 
 ## Process model
 
-Application Quick Dial is one GUI process with two threads:
+Application Quick Dial is one GUI process with two resident threads and bounded background work:
 
 1. The main STA thread owns COM initialization, the hidden launcher window, tray icon, catalog state, Direct2D resources, and the Win32 message loop.
 2. A hook thread installs `WH_KEYBOARD_LL` and runs the message loop required by the keyboard hook.
+3. At most one discovery worker and two icon workers perform Shell and WIC operations in their own COM apartments. Workers exit when their queues empty.
 
-There is no worker queue, service, database, or network dependency. The JSON catalog is the only persisted application data; installed-app discovery is rebuilt from the Windows Shell namespace.
+`BackgroundTasks` limits both concurrency and outstanding work (one discovery request and 32 icon jobs, including completed results awaiting dispatch). Workers own shared queue state and value inputs. They post `kMessageBackgroundComplete` with no payload; the main thread drains owned completion objects. A 100 ms timer drains results while jobs are outstanding as a fallback if posting fails, and stops when the queues empty. There is no service, database, or network dependency. The JSON catalog is the only persisted application data; installed-app discovery is rebuilt from the Windows Shell namespace.
 
 ## Startup sequence
 
@@ -19,7 +20,9 @@ There is no worker queue, service, database, or network dependency. The JSON cat
 4. If another instance owns the mutex, finds its launcher window, posts `kMessageShowLauncher`, and exits.
 5. Creates `LauncherApp`, initializes it, and enters its message loop.
 
-`LauncherApp::Initialize` creates common controls, Direct2D, DirectWrite, and WIC factories; registers and creates the popup window; loads the catalog; adds the tray icon; and starts the keyboard hook. The window is created hidden, so normal startup shows only the tray icon.
+`LauncherApp::Initialize` creates common controls, Direct2D and DirectWrite factories; registers and creates the popup window; adds the tray icon; starts the keyboard hook; loads the manual catalog; and queues discovery. Readiness does not wait for Shell enumeration. The window is created hidden, so normal startup shows only the tray icon. WIC factories are created in icon workers as needed.
+
+When launched with benchmark events, the window also answers the read-only `kMessageBenchmarkState` diagnostic. Its flags distinguish protocol availability, unfinished discovery/icon work or visible painting, and current catalog/background errors. Ordinary launches return zero. The benchmark waits for completion before sampling memory; this diagnostic does not drain work or change scheduling.
 
 ## Shortcut flow
 
@@ -32,7 +35,7 @@ keyboard event
   -> ShowLauncher or HideLauncher
 ```
 
-`HotkeyState` tracks left/right Windows keys and whether the Space chord is active. The first physical Space keydown while either Windows key is down triggers the launcher. Repeated Space keydowns and the matching keyup are suppressed. Injected events pass through.
+`HotkeyState` tracks left/right Windows keys and whether the Space chord is active. The first physical Space keydown while either Windows key is down triggers the launcher. Repeated Space keydowns and the matching physical keyup are suppressed, including when Windows is released first. Injected events pass through and cannot end a physical chord.
 
 When the chord triggers, `HookManager` injects a keydown/keyup pair for unused virtual key `0xE8`. This marks the Windows-key press as a chord so releasing Windows does not open Start. The state machine ignores that injected pair.
 
@@ -52,7 +55,7 @@ The JSON catalog is loaded:
 - each time the launcher is shown; and
 - when the tray menu's reload command is selected.
 
-Windows' `shell:AppsFolder` namespace is enumerated during initialization and when the tray reload command is selected. The discovered entries are cached between explicit refreshes, so opening the launcher only rereads the small JSON file. Configured entries retain JSON order and take precedence; remaining discovered entries are de-duplicated and appended alphabetically. Discovery results are never written to the JSON file.
+Windows' `shell:AppsFolder` namespace is enumerated asynchronously at startup and when the tray reload command is selected. Repeated explicit refresh requests coalesce into one follow-up scan. The discovered entries are cached between explicit refreshes; a failed initial scan is not retried on every open. Configured entries retain JSON order and take precedence; remaining discovered entries are de-duplicated and appended alphabetically. Discovery results are never written to the JSON file. Completion merges against the most recent valid configuration, preserving the query and selected target. If a file reload failed while scanning, completion updates only the discovery cache and leaves the displayed catalog and parse error intact until a valid reload.
 
 Parsing uses `Windows.Data.Json`. A UTF-8 BOM is accepted. Version must be numeric `1`, `applications` must be an array, and every entry must have a non-empty string `name` and `target`. Known optional fields, including `discoverInstalled`, `hiddenApplications`, and entry `id`, are type-checked. Unknown root and application fields are ignored, allowing compatible additions.
 
@@ -89,9 +92,13 @@ Icon resolution is lazy and follows this order:
 
 1. Decode the catalog's explicit `icon` path with WIC.
 2. Ask the Windows shell for an icon for `target`.
-3. Use the generic application icon.
+3. Draw a placeholder if neither source is available.
 
-Attempts and successful bitmaps are cached by catalog index. The cache is cleared after a successful catalog reload, when the launcher hides, or when the Direct2D target must be recreated.
+All file reads, image decoding, and shell icon extraction run in icon workers. Custom inputs are limited to 8192 pixels per side and 16 megapixels, then scaled to the requested display size (at most 96 pixels). Workers return premultiplied BGRA pixels, never apartment-bound COM interfaces or Direct2D resources. Only the main thread creates Direct2D bitmaps.
+
+For ICO files, decoding chooses the smallest frame at least as large as the requested size, or the largest available frame if all are smaller. Other image formats retain their first frame. Shell extraction allows a larger native bitmap with `SIIGBF_BIGGERSIZEOK`, avoiding the Shell's default GDI resize. Shell HBITMAPs are imported with `WICBitmapUseAlpha` to describe their straight-alpha pixels. WIC converts to premultiplied alpha before downscaling with its Fant filter; exact-size images bypass scaling. Rendering centers each image within the icon slot, preserves its aspect ratio, and aligns its edges to physical pixels at the current monitor DPI.
+
+Device-dependent bitmaps are cached by catalog index and released on catalog rebuild, hide, DPI change, or render-target loss. A separate least-recently-used source cache holds at most 128 scaled images or failed lookups, keyed by target, explicit icon path, and DPI, so reopening does not repeat decoding. Explicit tray reload clears source entries and advances a generation counter; late results from older generations are ignored.
 
 ## Launching
 
@@ -107,6 +114,8 @@ A successful launch hides the launcher. A failure stays visible and adds an erro
 
 The shell delivers tray events to the main window as `kMessageTray`. The menu can open the launcher, open the catalog with Windows' registered JSON handler, reload it, toggle start-with-Windows, or destroy the window to exit.
 
+The window registers `TaskbarCreated` and restores its icon after Explorer recreates the notification area. Failed registration retries every two seconds until successful; successful registration stops the retry timer. Repeated broadcasts can also update an icon that still exists.
+
 Start-with-Windows is stored for the current user at:
 
 ```text
@@ -118,4 +127,6 @@ The menu is checked only when the stored value exactly matches the quoted path o
 
 ## Ownership and cleanup
 
-`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached bitmaps, and `HookManager`. `HookManager::Stop` posts `WM_QUIT` to its thread and joins it. Window destruction stops the hook, removes the tray icon, and posts the main-thread quit message. Destructors repeat safe cleanup for partial initialization and failure paths.
+`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, and `HookManager`. Window destruction first stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled operation occupies only its bounded worker slot until it returns or the process exits.
+
+`HookManager::Stop` posts `WM_QUIT` to its thread and joins it. Window destruction removes the tray icon, stops timers, and posts the main-thread quit message. Destructors repeat safe cleanup for partial initialization and failure paths.
