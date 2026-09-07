@@ -1,5 +1,6 @@
 #include "AppMessages.h"
 #include "LauncherApp.h"
+#include "DiscoveryProcess.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -51,6 +52,7 @@ BenchmarkEvents OpenBenchmarkEvents() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  if (const auto helperExit = quickdial::RunDiscoveryHelperIfRequested()) return *helperExit;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   winrt::init_apartment(winrt::apartment_type::single_threaded);
 

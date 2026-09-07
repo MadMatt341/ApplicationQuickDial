@@ -2,11 +2,12 @@
 
 ## Process model
 
-Application Quick Dial is one GUI process with two resident threads and bounded background work:
+Application Quick Dial has one resident GUI process with two resident threads, bounded background work, and a temporary discovery helper:
 
 1. The main STA thread owns COM initialization, the hidden launcher window, tray icon, catalog state, Direct2D resources, and the Win32 message loop.
 2. A hook thread installs `WH_KEYBOARD_LL` and runs the message loop required by the keyboard hook.
-3. At most one discovery worker and two icon workers perform Shell and WIC operations in their own COM apartments. Workers exit when their queues empty.
+3. At most one discovery worker supervises a helper process without initializing COM in the resident process. Up to two icon workers perform Shell and WIC operations in their own COM apartments. Workers exit when their queues empty.
+4. For each scan, the launcher starts another copy of its own executable in private `--discover-apps` mode. That process initializes a COM STA, enumerates Windows' Apps folder, returns plain values, and exits. It creates no window, tray icon, hook, or single-instance mutex. Shipping the app still requires only one executable.
 
 `BackgroundTasks` limits both concurrency and outstanding work (one discovery request and 32 icon jobs, including completed results awaiting dispatch). Workers own shared queue state and value inputs. They post `kMessageBackgroundComplete` with no payload; the main thread drains owned completion objects. A 100 ms timer drains results while jobs are outstanding as a fallback if posting fails, and stops when the queues empty. There is no service, database, or network dependency. The JSON catalog is the only persisted application data; installed-app discovery is rebuilt from the Windows Shell namespace.
 
@@ -14,11 +15,12 @@ Application Quick Dial is one GUI process with two resident threads and bounded 
 
 `wWinMain` performs the following work:
 
-1. Enables per-monitor v2 DPI awareness.
-2. Initializes C++/WinRT as a single-threaded apartment.
-3. Creates `Local\ApplicationQuickDial.SingleInstance`.
-4. If another instance owns the mutex, finds its launcher window, posts `kMessageShowLauncher`, and exits.
-5. Creates `LauncherApp`, initializes it, and enters its message loop.
+1. Handles the private discovery-helper mode and exits if requested, before any GUI or singleton setup.
+2. Enables per-monitor v2 DPI awareness.
+3. Initializes C++/WinRT as a single-threaded apartment.
+4. Creates `Local\ApplicationQuickDial.SingleInstance`.
+5. If another instance owns the mutex, finds its launcher window, posts `kMessageShowLauncher`, and exits.
+6. Creates `LauncherApp`, initializes it, and enters its message loop.
 
 `LauncherApp::Initialize` creates common controls, Direct2D and DirectWrite factories; registers and creates the popup window; adds the tray icon; starts the keyboard hook; loads the manual catalog; and queues discovery. Readiness does not wait for Shell enumeration. The window is created hidden, so normal startup shows only the tray icon. WIC factories are created in icon workers as needed.
 
@@ -62,6 +64,16 @@ Parsing uses `Windows.Data.Json`. A UTF-8 BOM is accepted. Version must be numer
 Environment variables are expanded in `target`, `workingDirectory`, and `icon`. They are not expanded in `name`, `aliases`, or `arguments`.
 
 `LauncherApp::ReloadCatalog` replaces `catalog_` only after a complete successful parse. On failure it stores an error string and keeps the last valid catalog. This permits a user to fix a malformed file without losing the working in-memory list. On first-run failure there is no valid catalog to search. A discovery failure is non-fatal: configured entries and the last successful discovery cache remain usable while the error is surfaced in the launcher and tray notification.
+
+## Discovery process boundary
+
+Windows' discovery components remain mapped after in-process enumeration completes. `DiscoveryProcess` keeps those components in the helper so they are released when it exits. The resident process receives only each application's display name, target, and optional AppUserModelID. Merging and ranking still run on the main thread using the existing rules; helper values never pass through catalog environment expansion.
+
+The parent creates an unnamed, page-file-backed mapping capped at 4 MiB. The child inherits only that handle through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. A private versioned response contains a byte length, entry count, error string, and length-prefixed UTF-16 fields. `DiscoveryProtocol` rejects unsupported versions, truncated or oversized fields, embedded NULs, inconsistent responses, and more than 16,384 entries. Each string is limited to 32,768 UTF-16 code units. A failed write cannot leave a valid partial response.
+
+The parent reads the mapping only after a normal helper exit, then unmaps and closes it before delivering the completion to the UI. A nonzero exit, malformed response, launch failure, or 30-second timeout produces an error through the existing catalog/status path. There is no in-process fallback that could retain the discovery DLLs again. Explicit reload still coalesces into at most one follow-up scan.
+
+Each request creates a job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `PROC_THREAD_ATTRIBUTE_JOB_LIST` assigns the helper atomically during `CreateProcessW`, covering parent termination during child creation as well as later crashes. The helper cannot inherit the job handle. A stop token wakes the supervising worker when the window is destroyed; the worker closes the job and bounds its cleanup wait to one second. Main-thread teardown never joins that worker. Windows also closes the job and terminates its processes if the launcher exits abruptly. See Microsoft's [process attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute) and [job-object lifetime](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) documentation.
 
 ## Search and selection
 
@@ -127,6 +139,6 @@ The menu is checked only when the stored value exactly matches the quoted path o
 
 ## Ownership and cleanup
 
-`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, and `HookManager`. Window destruction first stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled operation occupies only its bounded worker slot until it returns or the process exits.
+`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, and `HookManager`. Window destruction requests discovery cancellation and stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled icon operation occupies only its bounded worker slot until it returns or the process exits; discovery runs in the separately supervised helper described above.
 
 `HookManager::Stop` posts `WM_QUIT` to its thread and joins it. Window destruction removes the tray icon, stops timers, and posts the main-thread quit message. Destructors repeat safe cleanup for partial initialization and failure paths.

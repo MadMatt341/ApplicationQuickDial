@@ -2,6 +2,7 @@
 
 #include "AppMessages.h"
 #include "BackgroundTasks.h"
+#include "DiscoveryProcess.h"
 #include "HookManager.h"
 #include "InstalledApps.h"
 #include "LauncherVisualStyle.h"
@@ -509,19 +510,9 @@ void LauncherApp::RebuildCatalog() {
 
 void LauncherApp::RequestInstalledApplications() {
   discoveryRequested_ = true;
-  discoveryPending_ = discoveryTasks_->Submit([this]() -> BackgroundTasks::Completion {
-    InstalledAppsResult installed;
-    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (FAILED(apartment)) {
-      installed.error = L"Could not initialize Windows app discovery: " + WindowsErrorMessage(apartment);
-    } else {
-      try {
-        installed = DiscoverInstalledApplications();
-      } catch (...) {
-        installed.error = L"Windows app discovery failed. Try Reload app list.";
-      }
-      CoUninitialize();
-    }
+  discoveryPending_ = discoveryTasks_->Submit(
+      [this, cancellation = discoveryCancellation_.get_token()]() -> BackgroundTasks::Completion {
+    InstalledAppsResult installed = DiscoverInstalledApplicationsIsolated(cancellation);
     // Only the completion dereferences this. Stop discards it before HWND teardown.
     return [this, installed = std::move(installed)]() mutable {
       ApplyInstalledApplications(std::move(installed));
@@ -595,6 +586,7 @@ void LauncherApp::ProcessBackgroundResults() {
 }
 
 void LauncherApp::StopBackgroundTasks() {
+  discoveryCancellation_.request_stop();
   if (iconTasks_) iconTasks_->Stop();
   if (discoveryTasks_) discoveryTasks_->Stop();
   if (window_) {

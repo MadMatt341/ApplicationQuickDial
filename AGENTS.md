@@ -42,6 +42,7 @@ Generated content belongs in `build/` or `out/`; do not add generated Visual Stu
 - `src/Search.*`: case-insensitive match scoring and stable ranking.
 - `src/HotkeyState.*`: testable `Win+Space` key-state machine.
 - `src/HookManager.*`: low-level keyboard hook thread and UI notification.
+- `src/DiscoveryProcess.*`, `src/DiscoveryProtocol.*`: temporary discovery helper, cancellation, and bounded app-list transport.
 - `src/StartupManager.*`: current-user `Run` registry entry.
 - `src/AppMessages.h`: private messages used to cross thread/process boundaries.
 - `tests/CoreTests.cpp`: tests for catalog parsing, search, and hotkey state.
@@ -53,6 +54,7 @@ Generated content belongs in `build/` or `out/`; do not add generated Visual Stu
 - Keep the low-level keyboard callback short. Do not perform file I/O, rendering, or application launching in it.
 - Ignore injected keyboard events. The hook injects an unassigned key to prevent the Windows key release from opening Start.
 - A failed catalog reload must not replace the last valid in-memory catalog.
+- Keep installed-app enumeration in its temporary helper process. Tie helper lifetime to the launcher, bound its response and wait, and retain the last valid list on failure.
 - Preserve catalog version `1` compatibility. Unknown JSON fields are accepted; known fields must keep their documented types.
 - Preserve stable search ordering for equal scores. JSON order is the final tie-breaker.
 - Treat layout constants in `LauncherApp.cpp` as device-independent pixels and scale them using the active monitor DPI.

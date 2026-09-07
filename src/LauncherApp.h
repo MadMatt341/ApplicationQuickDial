@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <stop_token>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -108,6 +109,7 @@ class LauncherApp {
   std::unique_ptr<HookManager> hookManager_;
   std::unique_ptr<BackgroundTasks> iconTasks_;
   std::unique_ptr<BackgroundTasks> discoveryTasks_;
+  std::stop_source discoveryCancellation_;
 
   Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
   Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

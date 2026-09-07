@@ -32,6 +32,8 @@ The targets are:
 - `quickdial_tests`: small assertion-based test executable registered with CTest.
 - `quickdial_background`: bounded background dispatch and icon decoding, shared by the app and background tests.
 - `quickdial_background_tests`: CTest coverage for concurrency limits, shutdown with blocked work, late completions, handle retention, and image downscaling.
+- `quickdial_discovery`: helper process supervision and the private app-list transport.
+- `quickdial_discovery_tests`: CTest coverage for transport validation, child crashes/timeouts, cancellation, restricted handle inheritance, cleanup after abrupt parent exit, repeated requests, and comparison with real Shell discovery.
 - `quickdial_launcher_tests`: explicit desktop integration checks using an isolated temporary catalog; briefly shows a test launcher and exercises tray restoration, catalog completion, benchmark state, and 140 distinct icon-cache entries.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
@@ -52,12 +54,15 @@ These checks use their own window and temporary JSON file. They do not modify th
 
 The cache stress check uses a generated 32-pixel BMP and distinct application targets. It verifies eviction at 128 sources, reuse ordering, reloading an evicted source, discarding results from before a refresh, and reusing pixels after releasing the render target. It complements the performance runner's repeated opens of the same six results; neither test substitutes for long-duration use across arbitrary third-party Shell providers.
 
+Discovery tests use private fixture modes in the test executable to exercise failed and blocked child processes. They also invoke the real launcher's helper mode and compare its complete app list with direct Windows enumeration. A restricted test token can expose fewer Windows apps; run `quickdial_discovery_tests.exe` on the normal desktop as well when validating the user's full catalog. The private helper mode bypasses the launcher singleton, so these comparisons also work with a resident instance.
+
 ## Where to make a change
 
 | Change | Primary files | Also check |
 |---|---|---|
 | Catalog field or validation | `src/Catalog.h`, `src/Catalog.cpp` | `tests/CoreTests.cpp`, `README.md`, `docs/architecture.md` |
 | Installed-app discovery or merge | `src/InstalledApps.*`, `src/LauncherApp.cpp` | catalog tests, tray reload, discovered app launches |
+| Discovery process lifetime or transport | `src/DiscoveryProcess.*`, `src/DiscoveryProtocol.*`, `src/main.cpp` | discovery tests, error retention, real-process memory benchmark |
 | Background lifetime or limits | `src/BackgroundTasks.*` | `tests/BackgroundTests.cpp`, shutdown during stalled work |
 | Icon decoding and source cache | `src/IconLoader.*`, `src/LauncherApp.cpp` | background tests, custom images, repeated reload/open |
 | Search scoring or result limit | `src/Search.cpp`, `src/LauncherApp.cpp` | `tests/CoreTests.cpp` |
