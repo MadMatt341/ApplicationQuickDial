@@ -5,7 +5,6 @@
 
 #include <fstream>
 #include <iterator>
-#include <limits>
 #include <system_error>
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -22,38 +21,7 @@ using winrt::Windows::Data::Json::JsonValueType;
 constexpr std::string_view kDefaultCatalog = R"json({
   "version": 1,
   "discoverInstalled": true,
-  "applications": [
-    {
-      "name": "ChatGPT",
-      "target": "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
-      "aliases": ["codex", "openai"]
-    },
-    {
-      "name": "Obsidian",
-      "target": "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Obsidian.lnk",
-      "aliases": ["notes", "vault", "markdown"]
-    },
-    {
-      "name": "Slack",
-      "target": "slack://open",
-      "aliases": ["chat", "messages"]
-    },
-    {
-      "name": "Brave",
-      "target": "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Brave.lnk",
-      "aliases": ["browser", "web"]
-    },
-    {
-      "name": "P4V",
-      "target": "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Perforce\\P4V.lnk",
-      "aliases": ["p4", "perforce"]
-    },
-    {
-      "name": "UnrealGameSync",
-      "target": "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Divide\\UnrealGameSync - Divide.lnk",
-      "aliases": ["ugs", "unreal game sync", "divide"]
-    }
-  ]
+  "applications": []
 }
 )json";
 
@@ -141,21 +109,6 @@ std::wstring RequiredString(const JsonObject& object, std::wstring_view key) {
     throw winrt::hresult_invalid_argument(message);
   }
   return value.GetString().c_str();
-}
-
-std::wstring Win32ErrorMessage(DWORD error) {
-  wchar_t* buffer = nullptr;
-  const DWORD length = FormatMessageW(
-      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-      nullptr, error, 0, reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
-  std::wstring message = length > 0 ? std::wstring(buffer, length) : L"Unknown Windows error";
-  if (buffer != nullptr) {
-    LocalFree(buffer);
-  }
-  while (!message.empty() && (message.back() == L'\r' || message.back() == L'\n')) {
-    message.pop_back();
-  }
-  return message;
 }
 
 }  // namespace

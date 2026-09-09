@@ -1,4 +1,5 @@
 #include "Search.h"
+#include "TextUtilities.h"
 
 #include <windows.h>
 
@@ -21,22 +22,6 @@ std::wstring Trim(std::wstring_view value) {
     --last;
   }
   return std::wstring(value.substr(first, last - first));
-}
-
-std::wstring FoldCase(std::wstring_view value) {
-  if (value.empty()) {
-    return {};
-  }
-
-  const int needed = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, value.data(),
-                                   static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr, 0);
-  if (needed <= 0) {
-    return std::wstring(value);
-  }
-  std::wstring result(static_cast<std::size_t>(needed), L'\0');
-  LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, value.data(), static_cast<int>(value.size()),
-                result.data(), needed, nullptr, nullptr, 0);
-  return result;
 }
 
 bool IsWordBoundary(wchar_t value) {
@@ -151,15 +136,11 @@ int IdentifierMatchScore(
 std::vector<std::size_t> RankApplications(
     const Catalog& catalog, std::wstring_view query, std::size_t limit) {
   const std::wstring foldedQuery = FoldCase(Trim(query));
+  if (foldedQuery.empty()) return {};
   std::vector<std::pair<int, std::size_t>> scored;
   scored.reserve(catalog.applications.size());
 
   for (std::size_t index = 0; index < catalog.applications.size(); ++index) {
-    if (foldedQuery.empty()) {
-      scored.emplace_back(0, index);
-      continue;
-    }
-
     const ApplicationEntry& application = catalog.applications[index];
     int score = MatchScore(FoldCase(application.name), foldedQuery);
     if (score == std::numeric_limits<int>::max()) {

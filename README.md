@@ -2,7 +2,7 @@
 
 Application Quick Dial is a tiny Windows 11 launcher that searches applications registered with Windows plus any entries you add yourself. It stays in the notification tray, opens with `Win+Space`, and reads its preferences and manual entries from a plain JSON file.
 
-The first run creates `%LOCALAPPDATA%\ApplicationQuickDial\apps.json` with a small curated set: ChatGPT/Codex, Obsidian, Slack, Brave, P4V, and UnrealGameSync. The launcher also discovers the launchable applications in Windows' Apps folder without writing that generated list into the JSON file.
+The first run creates `%LOCALAPPDATA%\ApplicationQuickDial\apps.json` with installed-app discovery enabled and an empty manual application list. The launcher discovers launchable applications in Windows' Apps folder without writing that generated list into the JSON file. Manual entries are optional, for example for portable apps Windows does not register. Existing configuration files are preserved.
 
 ## Build
 
@@ -33,9 +33,9 @@ Run `build\Release\ApplicationQuickDial.exe`. The app starts in the notification
 
 ## Use
 
-- Press `Win+Space` to show or hide the launcher.
+- Press `Win+Space` to show or hide the launcher. It opens with just the search bar; results appear as you type, and clearing the search collapses it again.
 - Type part of an application name, one of its aliases, or its language-neutral app identifier.
-- Use Up/Down to select, Enter to launch, or Escape to hide.
+- Use Up/Down to select, Enter to launch, or Escape to hide. Every matching app is available; up to six rows are visible at once. Scroll with the mouse wheel, or use the arrow keys to move through the full list with the selection kept in view.
 - Left-click the tray icon to open the launcher.
 - Newly installed applications become searchable automatically after Windows reports a change to its application list or Start-menu shortcuts.
 - Right-click the tray icon to edit/reload the app list, opt into starting with Windows, or exit.
@@ -44,7 +44,9 @@ While Application Quick Dial is running, it intentionally replaces Windows' norm
 
 ## App catalog
 
-The catalog format is:
+For a discovery-only setup, use `{"version": 1, "discoverInstalled": true, "applications": []}`. Older configurations may still contain starter entries; remove unwanted entries from `applications` using the tray menu's edit command. Updating the executable does not erase saved entries.
+
+An example with optional manual entries is:
 
 ```json
 {
@@ -69,7 +71,7 @@ The catalog format is:
 }
 ```
 
-`discoverInstalled` defaults to `true`. Discovered applications are merged in memory after the configured entries and sorted alphabetically. Set it to `false` to use only the JSON list. `hiddenApplications` can contain a discovered application's display name, shell target, or AppUserModelID; matching is case-insensitive.
+`discoverInstalled` defaults to `true`. Discovered applications are merged in memory after the configured entries and sorted alphabetically. Duplicate detection uses the launch target or app identifier, compared case-insensitively; matching display names alone do not hide distinct apps. Set it to `false` to use only the JSON list. `hiddenApplications` can contain a discovered application's display name, shell target, or AppUserModelID; matching is case-insensitive.
 
 As a lower-priority fallback, search also considers AppUserModelIDs, executable or shortcut filenames, and custom URI schemes. Identifiers are split at punctuation and camel-case boundaries, so language-neutral or English identifiers can match localized display names—for example, `calc` can find `Kalkulator` through `Microsoft.WindowsCalculator`. Explicit `aliases` remain the fallback for names an application does not expose in its identifier or target.
 

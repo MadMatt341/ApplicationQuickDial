@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -108,20 +109,19 @@ void TestDefaultCatalog() {
   if (result) {
     const auto& applications = result.catalog->applications;
     Check(result.catalog->discoverInstalled, "default catalog enables installed-app discovery");
-    Check(applications.size() == 6, "default catalog contains the curated applications");
-    if (applications.size() == 6) {
-      Check(applications[1].name == L"Obsidian", "default catalog contains Obsidian");
-      Check(applications[2].name == L"Slack" && applications[2].target == L"slack://open",
-            "default catalog contains Slack");
-      Check(applications[3].name == L"Brave", "default catalog contains Brave");
-      Check(applications[4].name == L"P4V" && !applications[4].aliases.empty() &&
-                applications[4].aliases[0] == L"p4",
-            "default catalog contains P4V with its p4 alias");
-      Check(applications[5].name == L"UnrealGameSync" && !applications[5].aliases.empty() &&
-                applications[5].aliases[0] == L"ugs",
-            "default catalog contains UnrealGameSync with its ugs alias");
-    }
+    Check(applications.empty(), "default catalog has no hardcoded applications");
   }
+
+  {
+    std::ofstream custom(catalogPath, std::ios::binary | std::ios::trunc);
+    custom << R"({"version":1,"discoverInstalled":false,"applications":[{"name":"Custom","target":"custom.exe"}]})";
+  }
+  Check(quickdial::EnsureDefaultCatalog(catalogPath, error), "existing catalog is accepted");
+  const auto preserved = quickdial::LoadCatalogFile(catalogPath);
+  Check(preserved && !preserved.catalog->discoverInstalled &&
+            preserved.catalog->applications.size() == 1 &&
+            preserved.catalog->applications[0].target == L"custom.exe",
+        "creating defaults preserves existing user configuration");
 
   std::error_code cleanupError;
   std::filesystem::remove(catalogPath, cleanupError);
@@ -153,13 +153,24 @@ void TestInstalledApplicationMerge() {
 
   const quickdial::Catalog merged =
       quickdial::MergeInstalledApplications(configured, std::move(installed));
-  Check(merged.applications.size() == 4, "merge removes hidden and duplicate installed applications");
-  if (merged.applications.size() == 4) {
+  Check(merged.applications.size() == 5, "merge removes hidden and duplicate installed applications");
+  if (merged.applications.size() == 5) {
     Check(merged.applications[0].name == L"Manual first" && merged.applications[1].name == L"Brave",
           "merge preserves configured application order");
-    Check(merged.applications[2].name == L"Alpha" && merged.applications[3].name == L"Zulu",
+    Check(merged.applications[2].name == L"Alpha" && merged.applications[3].name == L"brave" && merged.applications[4].name == L"Zulu",
           "merge appends discovered applications alphabetically");
   }
+
+  const quickdial::Catalog distinctNames = quickdial::MergeInstalledApplications({}, {
+      Installed(L"Editor", L"first.exe", L"first.id"),
+      Installed(L"Editor", L"second.exe", L"second.id"),
+      Installed(L"Other label", L"FIRST.EXE", L"other.id"),
+      Installed(L"Other identity label", L"third.exe", L"SECOND.ID"),
+  });
+  Check(distinctNames.applications.size() == 2 &&
+            distinctNames.applications[0].target == L"first.exe" &&
+            distinctNames.applications[1].target == L"second.exe",
+        "distinct same-name apps survive while target and identity duplicates are case-insensitive");
 
   configured.discoverInstalled = false;
   const quickdial::Catalog manualOnly = quickdial::MergeInstalledApplications(
@@ -169,6 +180,12 @@ void TestInstalledApplicationMerge() {
 }
 
 void TestSearchRanking() {
+  quickdial::Catalog manyMatches;
+  for (int index = 0; index < 20; ++index)
+    manyMatches.applications.push_back(App(L"Match " + std::to_wstring(index), L"app.exe"));
+  const auto allMatches = quickdial::RankApplications(manyMatches, L"Match");
+  Check(allMatches.size() == 20 && allMatches.back() == 19,
+        "default search retains every matching application in stable order");
   quickdial::Catalog catalog;
   catalog.applications = {
       App(L"Visual Studio Code", L"code.exe", {L"editor"}),
@@ -179,7 +196,9 @@ void TestSearchRanking() {
   };
 
   auto results = quickdial::RankApplications(catalog, L"", 6);
-  Check(results == std::vector<std::size_t>({0, 1, 2, 3, 4}), "empty query preserves JSON order");
+  Check(results.empty(), "empty query shows no applications");
+  Check(quickdial::RankApplications(catalog, L"  \t\r\n", 6).empty(),
+        "whitespace-only query shows no applications");
 
   results = quickdial::RankApplications(catalog, L"chat", 6);
   Check(results.size() == 2 && results[0] == 1 && results[1] == 4,

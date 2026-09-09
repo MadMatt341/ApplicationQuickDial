@@ -72,6 +72,10 @@ class LauncherApp {
   void StopBackgroundTasks();
   void UpdateResults();
   void MoveSelection(int delta);
+  void EnsureSelectionVisible();
+  void ScrollResults(int wheelDelta);
+  std::size_t VisibleResultRows() const;
+  std::optional<std::size_t> ResultAtY(float y) const;
   void LaunchSelection();
   bool LaunchApplication(const ApplicationEntry& application, std::wstring& error);
   void OpenCatalog();
@@ -110,8 +114,11 @@ class LauncherApp {
   bool hasValidCatalog_ = false;
   std::wstring catalogError_;
   std::wstring launchError_;
+  bool queryHasText_ = false;
   std::vector<std::size_t> results_;
   std::size_t selectedResult_ = 0;
+  std::size_t firstVisibleResult_ = 0;
+  int wheelRemainder_ = 0;
 
   std::unique_ptr<HookManager> hookManager_;
   std::unique_ptr<InstalledAppsWatcher> installedAppsWatcher_;

@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <string_view>
 #include <utility>
 
@@ -38,7 +39,7 @@ constexpr UINT kCommandReloadCatalog = 1003;
 constexpr UINT kCommandStartWithWindows = 1004;
 constexpr UINT kCommandExit = 1005;
 
-constexpr std::size_t kMaximumResults = 6;
+constexpr std::size_t kMaximumVisibleResults = 6;
 constexpr UINT_PTR kTrayRetryTimer = 1;
 constexpr UINT_PTR kBackgroundTimer = 2;
 constexpr UINT_PTR kInstalledApplicationsChangeTimer = 3;
@@ -288,7 +289,7 @@ void LauncherApp::LayoutEditControl() {
 
 void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
   const bool hasMessage = !catalogError_.empty() || !launchError_.empty();
-  const std::size_t visibleRows = std::max<std::size_t>(1, results_.size());
+  const std::size_t visibleRows = VisibleResultRows();
   const float heightDip = visuals::kSearchHeight + static_cast<float>(visibleRows) * visuals::kResultHeight +
                           visuals::kBottomPadding + (hasMessage ? visuals::kStatusHeight : 0.0f);
 
@@ -524,6 +525,7 @@ void LauncherApp::RebuildCatalog() {
   for (std::size_t index = 0; index < results_.size(); ++index) {
     if (catalog_.applications[results_[index]].target == selectedTarget) {
       selectedResult_ = index;
+      EnsureSelectionVisible();
       break;
     }
   }
@@ -681,8 +683,11 @@ void LauncherApp::UpdateResults() {
     GetWindowTextW(edit_, query.data(), length + 1);
     query.resize(static_cast<std::size_t>(length));
   }
-  results_ = hasValidCatalog_ ? RankApplications(catalog_, query, kMaximumResults) : std::vector<std::size_t>{};
+  queryHasText_ = std::any_of(query.begin(), query.end(), [](wchar_t c) { return !std::iswspace(c); });
+  results_ = hasValidCatalog_ ? RankApplications(catalog_, query) : std::vector<std::size_t>{};
   selectedResult_ = 0;
+  firstVisibleResult_ = 0;
+  wheelRemainder_ = 0;
   if (IsWindowVisible(window_)) {
     ResizeAndPosition(false);
   }
@@ -697,7 +702,47 @@ void LauncherApp::MoveSelection(int delta) {
   int selected = static_cast<int>(selectedResult_);
   selected = (selected + delta + count) % count;
   selectedResult_ = static_cast<std::size_t>(selected);
+  EnsureSelectionVisible();
   InvalidateRect(window_, nullptr, FALSE);
+}
+
+std::size_t LauncherApp::VisibleResultRows() const {
+  return queryHasText_ ? std::clamp<std::size_t>(results_.size(), 1, kMaximumVisibleResults) : 0;
+}
+
+void LauncherApp::EnsureSelectionVisible() {
+  if (results_.empty()) {
+    firstVisibleResult_ = 0;
+    return;
+  }
+  if (selectedResult_ < firstVisibleResult_) firstVisibleResult_ = selectedResult_;
+  else if (selectedResult_ >= firstVisibleResult_ + kMaximumVisibleResults)
+    firstVisibleResult_ = selectedResult_ - kMaximumVisibleResults + 1;
+  const auto maximum = results_.size() > kMaximumVisibleResults ? results_.size() - kMaximumVisibleResults : 0;
+  firstVisibleResult_ = std::min(firstVisibleResult_, maximum);
+}
+
+void LauncherApp::ScrollResults(int wheelDelta) {
+  wheelRemainder_ += wheelDelta;
+  const int notches = wheelRemainder_ / WHEEL_DELTA;
+  wheelRemainder_ %= WHEEL_DELTA;
+  if (!notches || results_.size() <= kMaximumVisibleResults) return;
+  UINT lines = 3;
+  SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+  if (lines == WHEEL_PAGESCROLL) lines = static_cast<UINT>(kMaximumVisibleResults);
+  const auto maximum = static_cast<long long>(results_.size() - kMaximumVisibleResults);
+  const auto next = static_cast<long long>(firstVisibleResult_) - static_cast<long long>(notches) * lines;
+  firstVisibleResult_ = static_cast<std::size_t>(std::clamp(next, 0LL, maximum));
+  selectedResult_ = std::clamp(selectedResult_, firstVisibleResult_, firstVisibleResult_ + kMaximumVisibleResults - 1);
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+std::optional<std::size_t> LauncherApp::ResultAtY(float y) const {
+  if (y < visuals::kSearchHeight) return std::nullopt;
+  const auto row = static_cast<std::size_t>((y - visuals::kSearchHeight) / visuals::kResultHeight);
+  const auto result = firstVisibleResult_ + row;
+  if (row >= kMaximumVisibleResults || result >= results_.size()) return std::nullopt;
+  return result;
 }
 
 void LauncherApp::LaunchSelection() {
@@ -819,7 +864,7 @@ void LauncherApp::Render() {
                           D2D1::Point2F(visuals::kWindowWidth - 16.0f, visuals::kSearchHeight),
                           separatorBrush.Get(), 1.0f);
 
-  if (results_.empty()) {
+  if (results_.empty() && queryHasText_) {
     const std::wstring message = !hasValidCatalog_
                                      ? L"App list unavailable — use the tray menu to open it"
                                      : (catalog_.applications.empty() ? L"No applications configured" : L"No matching applications");
@@ -829,8 +874,8 @@ void LauncherApp::Render() {
     renderTarget_->DrawTextW(message.c_str(), static_cast<UINT32>(message.size()), messageTextFormat_.Get(),
                              bounds, mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
   } else {
-    for (std::size_t resultIndex = 0; resultIndex < results_.size(); ++resultIndex) {
-      const float top = visuals::kSearchHeight + static_cast<float>(resultIndex) * visuals::kResultHeight;
+    for (std::size_t resultIndex = firstVisibleResult_; resultIndex < std::min(results_.size(), firstVisibleResult_ + kMaximumVisibleResults); ++resultIndex) {
+      const float top = visuals::kSearchHeight + static_cast<float>(resultIndex - firstVisibleResult_) * visuals::kResultHeight;
       if (resultIndex == selectedResult_) {
         renderTarget_->FillRoundedRectangle(
             D2D1::RoundedRect(
@@ -883,7 +928,7 @@ void LauncherApp::Render() {
   const std::wstring& status = !launchError_.empty() ? launchError_ : catalogError_;
   if (!status.empty()) {
     const float top = visuals::kSearchHeight +
-                      static_cast<float>(std::max<std::size_t>(1, results_.size())) * visuals::kResultHeight;
+                      static_cast<float>(VisibleResultRows()) * visuals::kResultHeight;
     const D2D1_RECT_F bounds = D2D1::RectF(
         visuals::kContentRight, top, visuals::kWindowWidth - visuals::kContentRight,
         top + visuals::kStatusHeight);
@@ -989,6 +1034,10 @@ LRESULT CALLBACK LauncherApp::EditProcedure(
   auto* app = reinterpret_cast<LauncherApp*>(referenceData);
   // TranslateMessage queues these characters before WM_KEYDOWN is dispatched.
   // The actions below consume the keys; the single-line edit would beep on the characters.
+  if (message == WM_MOUSEWHEEL) {
+    app->ScrollResults(GET_WHEEL_DELTA_WPARAM(wParam));
+    return 0;
+  }
   if (message == WM_CHAR && (wParam == VK_RETURN || wParam == VK_ESCAPE)) {
     return 0;
   }
@@ -1088,15 +1137,15 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
 
+    case WM_MOUSEWHEEL:
+      ScrollResults(GET_WHEEL_DELTA_WPARAM(wParam));
+      return 0;
+
     case WM_LBUTTONDOWN: {
       const float y = static_cast<float>(GET_Y_LPARAM(lParam)) * 96.0f / static_cast<float>(dpi_);
-      if (y >= visuals::kSearchHeight) {
-        const std::size_t row = static_cast<std::size_t>(
-            (y - visuals::kSearchHeight) / visuals::kResultHeight);
-        if (row < results_.size()) {
-          selectedResult_ = row;
-          LaunchSelection();
-        }
+      if (const auto result = ResultAtY(y)) {
+        selectedResult_ = *result;
+        LaunchSelection();
       }
       return 0;
     }

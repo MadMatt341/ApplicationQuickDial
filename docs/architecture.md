@@ -49,7 +49,7 @@ The hook cannot operate on the secure desktop and may not intercept input sent t
 
 The preferred file is `%LOCALAPPDATA%\ApplicationQuickDial\apps.json`. If the Local AppData known folder cannot be resolved, the fallback is `apps.json` in the process working directory.
 
-`EnsureDefaultCatalog` creates the directory and a version 1 catalog only when the file does not exist. It never overwrites an existing file.
+`EnsureDefaultCatalog` creates the directory and a version 1 catalog with discovery enabled and no manual entries only when the file does not exist. It never overwrites an existing file.
 
 Version 1 catalogs may set `discoverInstalled` (default `true`) and provide a `hiddenApplications` string array. Each hidden value is compared case-insensitively with a discovered application's display name, shell target, and AppUserModelID.
 
@@ -63,7 +63,7 @@ Windows' `shell:AppsFolder` namespace is enumerated asynchronously at startup, a
 
 A one-shot 750 ms window timer groups related events; each new event resets the delay. It is active only after a change, including while the launcher is hidden. If its delay expires during an existing scan, one follow-up scan is requested. Explicit reloads also coalesce into one follow-up scan. Disabling discovery or destroying the window releases subscriptions and cancels the delay. Subscription failures are surfaced through the existing status/tray paths and retried on catalog reload; there is no silent fallback to polling. A scan failure retains the previous discovered list and is retried on a later notification or explicit reload. Repeated identical errors do not repeat tray notifications.
 
-Configured entries retain JSON order and take precedence; remaining discovered entries are de-duplicated and appended alphabetically. Discovery results are never written to the JSON file. Completion merges against the most recent valid configuration, preserving the query and selected target. Identical discovery results with an unchanged error state skip catalog rebuilding and icon invalidation. If a file reload failed while scanning, completion updates only the discovery cache and leaves the displayed catalog and parse error intact until a valid reload.
+Configured entries retain JSON order and take precedence; remaining discovered entries are de-duplicated by case-insensitive target or app identifier and appended alphabetically. Display names are not identity keys, so different applications with the same name remain searchable. Discovery results are never written to the JSON file. Completion merges against the most recent valid configuration, preserving the query and selected target. Identical discovery results with an unchanged error state skip catalog rebuilding and icon invalidation. If a file reload failed while scanning, completion updates only the discovery cache and leaves the displayed catalog and parse error intact until a valid reload.
 
 Parsing uses `Windows.Data.Json`. A UTF-8 BOM is accepted. Version must be numeric `1`, `applications` must be an array, and every entry must have a non-empty string `name` and `target`. Known optional fields, including `discoverInstalled`, `hiddenApplications`, and entry `id`, are type-checked. Unknown root and application fields are ignored, allowing compatible additions.
 
@@ -94,7 +94,7 @@ Every edit-control `EN_CHANGE` notification calls `UpdateResults`. The query is 
 | 4-7 | the same four match classes on an alias |
 | 8-11 | the same four match classes on an AppUserModelID, target filename, or custom URI scheme |
 
-Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty query returns catalog order. The UI requests at most six results.
+Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty or whitespace-only query returns no results and shows only the search bar. Typing expands the window to show results or a no-match message; clearing the query collapses it again. The UI retains all ranked matches and renders at most six rows from a scrollable viewport. Query changes reset the viewport. Keyboard navigation keeps selection visible; wheel input accumulates partial deltas and follows the Windows scroll-line preference. Mouse hit testing accounts for the viewport offset.
 
 Up and Down wrap around the result list. Enter launches the selected result, Escape hides the window, and a left click launches the clicked row. Changing the query resets selection to the first result.
 
@@ -104,7 +104,7 @@ The edit subclass handles Enter and Escape on `WM_KEYDOWN` and consumes their qu
 
 The launcher is a topmost `WS_POPUP`/`WS_EX_TOOLWINDOW`, so it does not create a normal taskbar button. It hides when deactivated.
 
-On show, it chooses the foreground window's monitor, falling back to the cursor monitor, and positions itself near the upper center of that monitor's work area. Width and row dimensions are constants in device-independent pixels; `ResizeAndPosition` and `LayoutEditControl` scale them for monitor DPI. Height follows the number of visible results plus an optional error row.
+On show, it chooses the foreground window's monitor, falling back to the cursor monitor, and positions itself near the upper center of that monitor's work area. Width and row dimensions are constants in device-independent pixels; `ResizeAndPosition` and `LayoutEditControl` scale them for monitor DPI. Height follows the number of visible results (up to six) plus an optional error row.
 
 The search field is a native edit control. The rest is rendered with Direct2D and DirectWrite. Theme colors follow `AppsUseLightTheme` and are refreshed whenever the launcher opens.
 

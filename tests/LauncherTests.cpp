@@ -1,4 +1,6 @@
 #include "LauncherApp.h"
+#include "LauncherVisualStyle.h"
+#include <algorithm>
 #include "InstalledApps.h"
 #include "BackgroundTasks.h"
 #include "AppMessages.h"
@@ -139,7 +141,59 @@ class LauncherAppTestAccess {
     check(IsWindowVisible(app.window_), "show request makes the launcher visible");
     check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
           "an invalidated visible frame prevents a settled sample");
-    check(app.results_.size() == 2, "manual applications are immediately available");
+    check(app.results_.empty(), "opening shows no application results");
+    RECT emptyBounds{};
+    GetClientRect(app.window_, &emptyBounds);
+    SetWindowTextW(app.edit_, L"Test");
+    check(app.results_.size() == 2, "typing shows matching applications");
+    RECT populatedBounds{};
+    GetClientRect(app.window_, &populatedBounds);
+    check(populatedBounds.bottom > emptyBounds.bottom, "typing expands the search-only window");
+    SetWindowTextW(app.edit_, L"   ");
+    RECT clearedBounds{};
+    GetClientRect(app.window_, &clearedBounds);
+    check(app.results_.empty() && clearedBounds.bottom == emptyBounds.bottom,
+          "clearing to whitespace restores the search-only height");
+    SetWindowTextW(app.edit_, L"Test");
+
+    const auto originalCatalog = app.catalog_;
+    for (int index = 0; index < 12; ++index) {
+      ApplicationEntry entry;
+      entry.name = L"Test extra " + std::to_wstring(index);
+      entry.target = L"extra-" + std::to_wstring(index) + L".exe";
+      app.catalog_.applications.push_back(std::move(entry));
+    }
+    app.UpdateResults();
+    check(app.results_.size() == 14 && app.VisibleResultRows() == 6,
+          "all matches are retained within six visible rows");
+    for (int index = 0; index < 8; ++index) app.MoveSelection(1);
+    check(app.selectedResult_ == 8 && app.firstVisibleResult_ == 3,
+          "keyboard navigation scrolls beyond the sixth match");
+    check(app.ResultAtY(visuals::kSearchHeight + 1) == 3 &&
+              !app.ResultAtY(visuals::kSearchHeight + 6 * visuals::kResultHeight + 1),
+          "click hit testing follows the scrolled viewport and excludes rows below it");
+    SetWindowTextW(app.edit_, L"Test extra 11");
+    check(app.results_.size() == 1 && app.firstVisibleResult_ == 0,
+          "narrowing the query resets the viewport");
+    SetWindowTextW(app.edit_, L"Test");
+    app.MoveSelection(-1);
+    check(app.selectedResult_ == 13 && app.firstVisibleResult_ == 8,
+          "wrapping upward reveals the final match");
+    app.MoveSelection(1);
+    check(app.selectedResult_ == 0 && app.firstVisibleResult_ == 0,
+          "wrapping downward returns to the first match");
+    UINT wheelLines = 0;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0);
+    app.ScrollResults(-WHEEL_DELTA / 2);
+    check(app.firstVisibleResult_ == 0, "partial wheel deltas accumulate");
+    app.ScrollResults(-WHEEL_DELTA / 2);
+    check(app.firstVisibleResult_ == std::min<std::size_t>(wheelLines == WHEEL_PAGESCROLL ? 6 : wheelLines, 8),
+          "mouse wheel scrolls according to Windows preferences");
+    app.catalog_ = originalCatalog;
+    SetWindowTextW(app.edit_, L"");
+    check(app.results_.empty() && app.firstVisibleResult_ == 0 && app.VisibleResultRows() == 0,
+          "clearing a scrolled search restores the search-only state");
+    SetWindowTextW(app.edit_, L"Test");
 
     // Exercise the real completion path without depending on installed software.
     app.configuredCatalog_.discoverInstalled = true;

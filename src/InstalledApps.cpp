@@ -1,4 +1,5 @@
 #include "InstalledApps.h"
+#include "TextUtilities.h"
 
 #include <windows.h>
 #include <shobjidl.h>
@@ -8,7 +9,6 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <limits>
 #include <string_view>
 #include <unordered_set>
 
@@ -36,30 +36,8 @@ std::wstring HResultMessage(std::wstring_view prefix, HRESULT result) {
   return message;
 }
 
-std::wstring FoldCase(std::wstring_view value) {
-  if (value.empty()) {
-    return {};
-  }
-  if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-    return std::wstring(value);
-  }
-  const int length = static_cast<int>(value.size());
-  const int needed = LCMapStringEx(
-      LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, value.data(), length, nullptr, 0, nullptr, nullptr, 0);
-  if (needed <= 0) {
-    return std::wstring(value);
-  }
-  std::wstring result(static_cast<std::size_t>(needed), L'\0');
-  if (LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, value.data(), length,
-                    result.data(), needed, nullptr, nullptr, 0) <= 0) {
-    return std::wstring(value);
-  }
-  return result;
-}
-
 void AddApplicationKeys(
     const ApplicationEntry& application, std::unordered_set<std::wstring>& keys) {
-  keys.insert(L"name:" + FoldCase(application.name));
   keys.insert(L"target:" + FoldCase(application.target));
   if (application.identity && !application.identity->empty()) {
     keys.insert(L"id:" + FoldCase(*application.identity));
@@ -68,8 +46,7 @@ void AddApplicationKeys(
 
 bool HasApplicationKey(
     const ApplicationEntry& application, const std::unordered_set<std::wstring>& keys) {
-  if (keys.contains(L"name:" + FoldCase(application.name)) ||
-      keys.contains(L"target:" + FoldCase(application.target))) {
+  if (keys.contains(L"target:" + FoldCase(application.target))) {
     return true;
   }
   return application.identity && !application.identity->empty() &&
