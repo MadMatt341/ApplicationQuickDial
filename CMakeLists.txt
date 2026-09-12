@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 
 project(ApplicationQuickDial VERSION 0.1.0 LANGUAGES CXX)
 
+# Keep portable builds independent of a separately installed VC++ runtime.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 if(NOT WIN32)
   message(FATAL_ERROR "Application Quick Dial is a Windows-only application.")
 endif()

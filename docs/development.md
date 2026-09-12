@@ -154,3 +154,9 @@ Run only the sections affected by a change. Before testing, exit any installed o
 ## Documentation maintenance
 
 Keep `README.md` user-facing. Record system behavior and invariants in `docs/architecture.md`; record build, change, and verification guidance here. Keep `AGENTS.md` short enough to scan before implementation.
+
+## Public release package
+
+Run `./package.ps1 -Version 0.1.0` from a shell with CMake and CTest available. It defaults to Visual Studio 2022; pass `-Generator "Visual Studio 18 2026"` for Visual Studio 2026. It configures a separate `build/package` directory, builds Release, runs the CTest suite, and packages only the executable, README, and MIT license under `build/releases`. It also writes a SHA-256 checksum beside the ZIP. Existing versioned ZIPs are never overwritten. Review and commit the source and documentation before publishing the matching tag and assets.
+
+All targets statically link the MSVC runtime (`/MT`, or `/MTd` for Debug), so the portable executable does not require a separate Visual C++ Redistributable installation.

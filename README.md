@@ -4,6 +4,14 @@ Application Quick Dial is a tiny Windows 11 launcher that searches applications 
 
 The first run creates `%LOCALAPPDATA%\ApplicationQuickDial\apps.json` with installed-app discovery enabled and an empty manual application list. The launcher discovers launchable applications in Windows' Apps folder without writing that generated list into the JSON file. Manual entries are optional, for example for portable apps Windows does not register. Existing configuration files are preserved.
 
+## Download and install
+
+Download the Windows x64 ZIP from [GitHub Releases](https://github.com/MadMatt341/ApplicationQuickDial/releases), extract it to a permanent folder, and run `ApplicationQuickDial.exe`. No installer or separate C++ runtime is needed for the packaged release. Use the tray menu to enable **Start with Windows** if wanted.
+
+To update, exit from the tray menu and replace the executable in the same folder. Your catalog is preserved. To remove, turn off **Start with Windows**, exit, and delete the extracted folder. Optionally delete `%LOCALAPPDATA%\ApplicationQuickDial` to remove your catalog and preferences.
+
+Release binaries are unsigned and Windows may show a security warning. Each release includes a SHA-256 checksum for its ZIP.
+
 ## Build
 
 Requirements:
@@ -86,3 +94,9 @@ Icons also load in the background. Custom images keep their proportions, and mul
 - [Architecture](docs/architecture.md): process, threading, catalog, search, rendering, and launch flow.
 - [Development guide](docs/development.md): build targets, change locations, tests, and manual verification.
 - [Agent guide](AGENTS.md): repository constraints and implementation rules.
+
+## License and support
+
+Copyright (c) 2026 MadMatt341. Application Quick Dial is open source under the [MIT license](LICENSE).
+
+This is a personal utility maintained as time allows. Bug reports and contributions are welcome, but support and release timelines are not guaranteed.
