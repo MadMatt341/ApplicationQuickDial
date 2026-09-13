@@ -1,6 +1,7 @@
 #include "AppMessages.h"
 #include "LauncherApp.h"
 #include "DiscoveryProcess.h"
+#include "SingleInstance.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -61,18 +62,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     return 2;
   }
 
-  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\ApplicationQuickDial.SingleInstance");
-  if (mutex == nullptr) {
+  quickdial::SingleInstance singleInstance;
+  std::wstring instanceError;
+  const auto instanceStart = singleInstance.Start(quickdial::kWindowClassName, quickdial::kMessageShowLauncher,
+                                                 instanceError);
+  if (instanceStart == quickdial::InstanceStart::Failed) {
+    MessageBoxW(nullptr, instanceError.c_str(), L"Application Quick Dial", MB_OK | MB_ICONERROR);
     return 1;
   }
-  const std::unique_ptr<void, decltype(&CloseHandle)> mutexGuard(mutex, CloseHandle);
-
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    if (HWND existing = FindWindowW(quickdial::kWindowClassName, nullptr); existing != nullptr) {
-      PostMessageW(existing, quickdial::kMessageShowLauncher, 0, 0);
-    }
-    return 0;
-  }
+  if (instanceStart == quickdial::InstanceStart::Forwarded) return 0;
 
   quickdial::LauncherApp application(benchmarkEvents.presented.get());
   if (!application.Initialize(instance)) {

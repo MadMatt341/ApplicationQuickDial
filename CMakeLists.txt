@@ -44,6 +44,7 @@ add_executable(ApplicationQuickDial WIN32
   src/LauncherApp.cpp
   src/LauncherVisualStyle.cpp
   src/StartupManager.cpp
+  src/SingleInstance.cpp
   src/main.cpp
   resources.rc
 )
@@ -109,4 +110,11 @@ if(BUILD_TESTING)
   target_compile_definitions(quickdial_benchmarks PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(quickdial_benchmarks PRIVATE /W4 /permissive- /EHsc)
   target_link_libraries(quickdial_benchmarks PRIVATE quickdial_core psapi user32)
+
+  # Uses private Win32 desktops and fixture processes; run on the normal desktop.
+  add_executable(quickdial_single_instance_tests tests/SingleInstanceTests.cpp src/SingleInstance.cpp)
+  target_include_directories(quickdial_single_instance_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(quickdial_single_instance_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(quickdial_single_instance_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_single_instance_tests PRIVATE user32)
 endif()

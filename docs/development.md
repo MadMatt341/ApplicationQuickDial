@@ -35,6 +35,7 @@ The targets are:
 - `quickdial_discovery`: helper process supervision and the private app-list transport.
 - `quickdial_discovery_tests`: CTest coverage for transport validation, child crashes/timeouts, cancellation, restricted handle inheritance, cleanup after abrupt parent exit, repeated requests, and comparison with real Shell discovery.
 - `quickdial_launcher_tests`: explicit desktop integration checks using an isolated temporary catalog; briefly shows a test launcher and exercises tray restoration, catalog completion, benchmark state, and 140 distinct icon-cache entries.
+- `quickdial_single_instance_tests`: explicit integration checks using private Win32 desktops and fixture processes. Covers independent desktop instances, repeated launches, concurrent startup, abandoned ownership, older-version forwarding, and bounded failures for missing or unresponsive windows. It does not switch the user's desktop or use their catalog.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
 
@@ -48,6 +49,7 @@ With a normal interactive Windows desktop, run the launcher integration checks s
 
 ```powershell
 .\build\Release\quickdial_launcher_tests.exe
+.\build\Release\quickdial_single_instance_tests.exe
 ```
 
 These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch target applications, or restart Explorer. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window. Automatic discovery checks exercise actual Apps-folder Shell notification delivery, event coalescing, refresh while hidden, retry after failure, cancellation when disabled, and cached reopening without polling. Deterministic completion checks also verify that a newly installed app appears in the current query, disappears after removal, and leaves icon state intact when a scan finds no changes.
@@ -75,7 +77,7 @@ Discovery tests use private fixture modes in the test executable to exercise fai
 | Target launching or argument handling | `LauncherApp::LaunchApplication` | executable, document/URL, `shell:`, arguments, and working-directory checks |
 | Tray commands | tray helpers in `src/LauncherApp.cpp` | command IDs and notification behavior |
 | Start with Windows | `src/StartupManager.*` | current-user Run registry behavior |
-| Single-instance behavior | `src/main.cpp`, `src/AppMessages.h` | second launch brings up the existing instance |
+| Single-instance behavior | `src/SingleInstance.*`, `src/main.cpp`, `src/AppMessages.h` | private-desktop integration checks; second launch brings up the existing instance |
 | Manifest or DPI declarations | `app.manifest`, `resources.rc`, `CMakeLists.txt` | runtime DPI behavior and executable resource embedding |
 
 ## Adding testable logic
@@ -96,6 +98,7 @@ Run only the sections affected by a change. Before testing, exit any installed o
 2. Start it a second time and confirm the existing instance opens and the second process exits.
 3. Exit from the tray menu and confirm the tray icon disappears.
 4. Confirm tray restoration with `quickdial_launcher_tests.exe`; no Explorer restart is required.
+5. Run `quickdial_single_instance_tests.exe` to verify that an instance on another Win32 desktop cannot block startup and that repeated launches on each desktop reach only their own instance.
 
 ### Shortcut and focus
 
@@ -149,6 +152,7 @@ Run only the sections affected by a change. Before testing, exit any installed o
 - If catalog edits appear ignored, close and reopen the launcher or use Reload app list. A parse error intentionally retains the previous catalog.
 - If a custom icon is missing, verify the expanded path first. Failure falls through silently to shell and generic icons.
 - If a newly built executable only opens an older copy, exit the running instance before launching the new build.
+- Start user-facing launcher instances from the user's interactive desktop. Tool sandboxes can run as a different account on an isolated Win32 desktop, where their windows and tray icons are inaccessible to the user. Those instances no longer block the user's desktop, but their presence is not evidence that the user-facing launcher is running.
 - If startup initialization fails before the tray icon exists, the process displays a message box and exits with code `1`.
 
 ## Documentation maintenance

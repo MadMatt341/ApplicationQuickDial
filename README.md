@@ -39,6 +39,8 @@ The exact budgets, measurement definitions, and current baseline are documented 
 
 Run `build\Release\ApplicationQuickDial.exe`. The app starts in the notification tray rather than showing a normal taskbar window.
 
+Launching it again opens the existing instance on the same Windows desktop. An instance running on an isolated desktop, such as a development-tool sandbox, does not prevent it from starting on your desktop.
+
 ## Use
 
 - Press `Win+Space` to show or hide the launcher. It opens with just the search bar; results appear as you type, and clearing the search collapses it again.

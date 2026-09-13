@@ -20,8 +20,8 @@ Application Quick Dial has one resident GUI process with two resident threads, b
 1. Handles the private discovery-helper mode and exits if requested, before any GUI or singleton setup.
 2. Enables per-monitor v2 DPI awareness.
 3. Initializes C++/WinRT as a single-threaded apartment.
-4. Creates `Local\ApplicationQuickDial.SingleInstance`.
-5. If another instance owns the mutex, finds its launcher window, posts `kMessageShowLauncher`, and exits.
+4. Creates and owns a session-local mutex scoped to the current Win32 window station and desktop. A launcher on an isolated desktop cannot block the interactive desktop's launcher.
+5. If an existing launcher window is on this desktop (including an older version), sends `kMessageShowLauncher` with a two-second timeout and exits after successful delivery. If another instance is still creating its window, waits up to two seconds for it; abandoned startup ownership can be recovered. Unreachable or unresponsive instances produce an actionable startup error instead of silent success.
 6. Creates `LauncherApp`, initializes it, and enters its message loop.
 
 `LauncherApp::Initialize` creates common controls, Direct2D and DirectWrite factories; registers and creates the popup window; adds the tray icon; starts the keyboard hook; loads the manual catalog; and queues discovery. Readiness does not wait for Shell enumeration. The window is created hidden, so normal startup shows only the tray icon. WIC factories are created in icon workers as needed.
