@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ApplicationQuickDial VERSION 0.1.0 LANGUAGES CXX)
+project(ApplicationQuickDial VERSION 0.1.1 LANGUAGES CXX)
 
 # Keep portable builds independent of a separately installed VC++ runtime.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
