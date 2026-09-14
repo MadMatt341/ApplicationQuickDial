@@ -1,104 +1,36 @@
 # Application Quick Dial
 
-Application Quick Dial is a tiny Windows 11 launcher that searches applications registered with Windows plus any entries you add yourself. It stays in the notification tray, opens with `Win+Space`, and reads its preferences and manual entries from a plain JSON file.
+A small Windows 11 x64 launcher for installed applications and optional manual entries. It lives in the notification tray and opens with **Win+Space**.
 
-The first run creates `%LOCALAPPDATA%\ApplicationQuickDial\apps.json` with installed-app discovery enabled and an empty manual application list. The launcher discovers launchable applications in Windows' Apps folder without writing that generated list into the JSON file. Manual entries are optional, for example for portable apps Windows does not register. Existing configuration files are preserved.
+## Install
 
-## Download and install
+Download the Windows x64 ZIP from [GitHub Releases](https://github.com/MadMatt341/ApplicationQuickDial/releases), extract it to a permanent folder, and run `ApplicationQuickDial.exe`. No installer or separate C++ runtime is needed. Startup shows a tray icon rather than a taskbar window.
 
-Download the Windows x64 ZIP from [GitHub Releases](https://github.com/MadMatt341/ApplicationQuickDial/releases), extract it to a permanent folder, and run `ApplicationQuickDial.exe`. No installer or separate C++ runtime is needed for the packaged release. Use the tray menu to enable **Start with Windows** if wanted.
+Right-click the tray icon and enable **Start with Windows** if wanted. Launching the executable again opens the existing instance on your Windows desktop.
 
-To update, exit from the tray menu and replace the executable in the same folder. Your catalog is preserved. To remove, turn off **Start with Windows**, exit, and delete the extracted folder. Optionally delete `%LOCALAPPDATA%\ApplicationQuickDial` to remove your catalog and preferences.
+To update, exit through the tray menu and replace the executable in the same folder. Your catalog is preserved. To remove, disable **Start with Windows**, exit, and delete the extracted folder. Optionally delete `%LOCALAPPDATA%\ApplicationQuickDial` to remove saved preferences.
 
-Release binaries are unsigned and Windows may show a security warning. Each release includes a SHA-256 checksum for its ZIP.
-
-## Build
-
-Requirements:
-
-- Windows 11 x64
-- Visual Studio with the Desktop development with C++ workload
-- Windows 11 SDK
-- CMake 3.24 or newer
-
-From a Visual Studio Developer PowerShell:
-
-```powershell
-cmake -S . -B build -A x64
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-```
-
-To run the real-process performance contract, exit any resident Quick Dial instance and run:
-
-```powershell
-.\build\Release\quickdial_benchmarks.exe
-```
-
-The exact budgets, measurement definitions, and current baseline are documented in [docs/performance.md](docs/performance.md).
-
-Run `build\Release\ApplicationQuickDial.exe`. The app starts in the notification tray rather than showing a normal taskbar window.
-
-Launching it again opens the existing instance on the same Windows desktop. An instance running on an isolated desktop, such as a development-tool sandbox, does not prevent it from starting on your desktop.
+Release binaries are unsigned and Windows may show a security warning. Each ZIP has a SHA-256 checksum.
 
 ## Use
 
-- Press `Win+Space` to show or hide the launcher. It opens with just the search bar; results appear as you type, and clearing the search collapses it again.
-- Type part of an application name, one of its aliases, or its language-neutral app identifier.
-- Use Up/Down to select, Enter to launch, or Escape to hide. Every matching app is available; up to six rows are visible at once. Scroll with the mouse wheel, or use the arrow keys to move through the full list with the selection kept in view.
-- Left-click the tray icon to open the launcher.
-- Newly installed applications become searchable automatically after Windows reports a change to its application list or Start-menu shortcuts.
-- Right-click the tray icon to edit/reload the app list, opt into starting with Windows, or exit.
+- **Win+Space** shows or hides the search bar. Type an application name, alias, or app identifier; clearing the query collapses the results.
+- **Up/Down** selects, **Enter** launches, and **Escape** hides. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
+- Click a result to launch it. Left-click the tray icon to open the launcher; right-click for configuration, reload, startup, and exit commands.
+- Installed applications are discovered automatically and refreshed when Windows reports changes.
 
-While Application Quick Dial is running, it intentionally replaces Windows' normal `Win+Space` keyboard-layout shortcut. The low-level shortcut is unavailable on the secure desktop and may not intercept input aimed at a higher-integrity application.
+While running, Quick Dial replaces Windows' normal **Win+Space** keyboard-layout shortcut. The shortcut is unavailable on the secure desktop and may not intercept input aimed at an elevated application; the tray icon is the fallback.
 
-## App catalog
+## Configure or develop
 
-For a discovery-only setup, use `{"version": 1, "discoverInstalled": true, "applications": []}`. Older configurations may still contain starter entries; remove unwanted entries from `applications` using the tray menu's edit command. Updating the executable does not erase saved entries.
+Preferences and optional manual entries live in `%LOCALAPPDATA%\ApplicationQuickDial\apps.json`. First run creates a discovery-only catalog; updating the executable does not overwrite it.
 
-An example with optional manual entries is:
-
-```json
-{
-  "version": 1,
-  "discoverInstalled": true,
-  "hiddenApplications": ["Microsoft.WindowsNotepad_8wekyb3d8bbwe!App"],
-  "applications": [
-    {
-      "name": "ChatGPT",
-      "target": "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
-      "aliases": ["codex", "openai"]
-    },
-    {
-      "name": "Notepad",
-      "target": "notepad.exe",
-      "aliases": ["text"],
-      "arguments": [],
-      "workingDirectory": "%USERPROFILE%",
-      "icon": "%SystemRoot%\\System32\\notepad.exe"
-    }
-  ]
-}
-```
-
-`discoverInstalled` defaults to `true`. Discovered applications are merged in memory after the configured entries and sorted alphabetically. Duplicate detection uses the launch target or app identifier, compared case-insensitively; matching display names alone do not hide distinct apps. Set it to `false` to use only the JSON list. `hiddenApplications` can contain a discovered application's display name, shell target, or AppUserModelID; matching is case-insensitive.
-
-As a lower-priority fallback, search also considers AppUserModelIDs, executable or shortcut filenames, and custom URI schemes. Identifiers are split at punctuation and camel-case boundaries, so language-neutral or English identifiers can match localized display names—for example, `calc` can find `Kalkulator` through `Microsoft.WindowsCalculator`. Explicit `aliases` remain the fallback for names an application does not expose in its identifier or target.
-
-For manual entries, `name` and `target` are required. `id`, `aliases`, `arguments`, `workingDirectory`, and `icon` are optional. Environment variables are expanded in `target`, `workingDirectory`, and `icon`. Targets may be executables, shortcuts, documents, URLs, or `shell:` application identifiers. An optional `id` participates in duplicate detection and can be referenced by `hiddenApplications`.
-
-The JSON file is reloaded whenever the launcher opens. Windows app discovery runs in the background at startup and in response to Windows application-list, registration, or Start-menu changes. Related notifications are grouped into one refresh after a short pause, including while Quick Dial is hidden. Opening the launcher uses the cached app list; there is no periodic scanning. New apps appear after Windows registers them in its Apps folder and the refresh finishes; removed discovered apps disappear on refresh. Manual entries and the previous discovered list remain available while scanning, preserving your query and selection. A failed scan, including one that exceeds the 30-second timeout, retains the previous discovered list; another change notification or **Reload app list** retries discovery. Invalid edits never replace the last catalog that was parsed successfully.
-
-Icons also load in the background. Custom images keep their proportions, and multi-resolution ICO files use the best available size for the monitor's scale. Larger images are downscaled with transparency preserved; source dimensions are limited to 8192 pixels per side and 16 megapixels. Unsupported or oversized images fall back to the application's shell icon. **Reload app list** refreshes cached icons. The tray icon is restored automatically if Windows Explorer restarts.
-
-## Developer documentation
-
-- [Architecture](docs/architecture.md): process, threading, catalog, search, rendering, and launch flow.
-- [Development guide](docs/development.md): build targets, change locations, tests, and manual verification.
-- [Agent guide](AGENTS.md): repository constraints and implementation rules.
+- [Catalog reference](https://github.com/MadMatt341/ApplicationQuickDial/blob/main/docs/catalog.md): JSON examples, supported fields, aliases, hidden apps, and icons.
+- [Troubleshooting](https://github.com/MadMatt341/ApplicationQuickDial/blob/main/docs/troubleshooting.md): startup, shortcut, and catalog diagnosis.
+- [Development map](docs/development.md): build commands and task-specific source/reference links.
+- [Architecture overview](docs/architecture.md): system boundaries and deeper design references.
+- [Agent instructions](AGENTS.md): scoped working rules.
 
 ## License and support
 
-Copyright (c) 2026 MadMatt341. Application Quick Dial is open source under the [MIT license](LICENSE).
-
-This is a personal utility maintained as time allows. Bug reports and contributions are welcome, but support and release timelines are not guaranteed.
+Copyright (c) 2026 MadMatt341. Released under the [MIT license](LICENSE). This is a personal utility maintained as time allows; support and release timelines are not guaranteed.
