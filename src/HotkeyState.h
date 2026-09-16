@@ -13,6 +13,7 @@ enum class HotkeyDisposition {
 class HotkeyState {
  public:
   HotkeyDisposition Handle(std::uint32_t virtualKey, bool keyDown, bool injected = false) noexcept;
+  void ClearReleasedWindowsKeys(bool leftDown, bool rightDown) noexcept;
 
  private:
   bool leftWindowsDown_ = false;

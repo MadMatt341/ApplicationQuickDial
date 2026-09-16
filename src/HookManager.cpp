@@ -99,6 +99,15 @@ LRESULT CALLBACK HookManager::HookProcedure(int code, WPARAM wParam, LPARAM lPar
   }
 
   const bool injected = (event->flags & LLKHF_INJECTED) != 0;
+  if (!injected && event->vkCode == VK_SPACE) {
+    // Recover from Windows keyups missed across desktop changes or other hooks.
+    // Query on Space, not on the Windows event itself: asynchronous key state is
+    // updated only after its low-level hook callback. Zero also safely disarms
+    // the shortcut when Windows cannot expose the key state on this desktop.
+    instance_->state_.ClearReleasedWindowsKeys(
+        (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+  }
   const HotkeyDisposition disposition = instance_->state_.Handle(event->vkCode, keyDown, injected);
   if (disposition == HotkeyDisposition::TriggerAndSuppress) {
     MaskWindowsKeyTap();

@@ -275,6 +275,68 @@ void TestHotkeyState() {
   Check(state.Handle(0xE8, true, true) == HotkeyDisposition::Pass, "injected shell mask key is ignored");
 
   for (const auto windowsKey : {VK_LWIN, VK_RWIN}) {
+    quickdial::HotkeyState missedRelease;
+    missedRelease.Handle(windowsKey, true);
+    missedRelease.ClearReleasedWindowsKeys(false, false);
+    Check(missedRelease.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "missed Windows release cannot turn ordinary Space into a shortcut");
+    Check(missedRelease.Handle(VK_SPACE, false) == HotkeyDisposition::Pass,
+          "ordinary Space release passes after recovering a missed Windows release");
+    missedRelease.Handle(windowsKey, true);
+    missedRelease.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+    Check(missedRelease.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,
+          "a fresh physical Windows press still triggers after stale state recovery");
+    missedRelease.ClearReleasedWindowsKeys(false, false);
+    Check(missedRelease.Handle(VK_SPACE, true) == HotkeyDisposition::Suppress,
+          "clearing stale Windows state preserves suppression of an active Space repeat");
+    Check(missedRelease.Handle(VK_SPACE, false) == HotkeyDisposition::Suppress,
+          "clearing stale Windows state preserves the matching Space release");
+    Check(missedRelease.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "ordinary typing resumes after an active chord and missed Windows release");
+
+    quickdial::HotkeyState injectedWindows;
+    injectedWindows.Handle(windowsKey, true, true);
+    injectedWindows.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+    Check(injectedWindows.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "asynchronous state cannot arm the shortcut from an injected Windows press");
+
+    quickdial::HotkeyState clearedWindows;
+    clearedWindows.Handle(windowsKey, true);
+    clearedWindows.ClearReleasedWindowsKeys(false, false);
+    clearedWindows.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+    Check(clearedWindows.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "a later down snapshot cannot resurrect a cleared Windows press");
+
+    quickdial::HotkeyState spaceUpRecovery;
+    spaceUpRecovery.Handle(windowsKey, true);
+    spaceUpRecovery.Handle(VK_SPACE, true);
+    spaceUpRecovery.ClearReleasedWindowsKeys(false, false);
+    Check(spaceUpRecovery.Handle(VK_SPACE, false) == HotkeyDisposition::Suppress,
+          "missed Windows release first detected on Space keyup still consumes that keyup");
+    Check(spaceUpRecovery.Handle(VK_SPACE, true) == HotkeyDisposition::Pass,
+          "next Space passes when stale Windows state was cleared on the previous keyup");
+
+    quickdial::HotkeyState heldWindows;
+    heldWindows.Handle(windowsKey, true);
+    heldWindows.Handle(windowsKey, false, true);
+    for (int press = 0; press < 3; ++press) {
+      heldWindows.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+      Check(heldWindows.Handle(VK_SPACE, true, true) == HotkeyDisposition::Pass,
+            "injected Space does not start a chord while physical Windows is held");
+      Check(heldWindows.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,
+            "separate Space presses each trigger while Windows remains held");
+      heldWindows.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+      Check(heldWindows.Handle(VK_SPACE, false) == HotkeyDisposition::Suppress,
+            "each Space release is consumed while Windows remains held");
+    }
+
+    quickdial::HotkeyState bothWindows;
+    bothWindows.Handle(VK_LWIN, true);
+    bothWindows.Handle(VK_RWIN, true);
+    bothWindows.ClearReleasedWindowsKeys(windowsKey == VK_LWIN, windowsKey == VK_RWIN);
+    Check(bothWindows.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,
+          "clearing one released Windows key preserves the other held Windows key");
+
     quickdial::HotkeyState releaseOrder;
     releaseOrder.Handle(windowsKey, true);
     Check(releaseOrder.Handle(VK_SPACE, true) == HotkeyDisposition::TriggerAndSuppress,

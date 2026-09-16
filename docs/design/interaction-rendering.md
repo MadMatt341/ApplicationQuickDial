@@ -17,6 +17,8 @@ keyboard event
 
 When the chord triggers, `HookManager` injects a keydown/keyup pair for unused virtual key `0xE8`. This marks the Windows-key press as a chord so releasing Windows does not open Start. The state machine ignores that injected pair.
 
+Before each non-injected Space event, the hook checks the high bit of `GetAsyncKeyState` for both Windows keys and clears any tracked press that is no longer down. This recovers from missed Windows-key releases without arming the shortcut from injected presses or ending an active Space chord. Unavailable key state disarms the corresponding Windows key. The check runs on Space because asynchronous state for a key is not updated until after that key's own low-level callback.
+
 The hook cannot operate on the secure desktop and may not intercept input sent to a higher-integrity process. The tray icon remains the fallback entry point.
 
 ## Search and selection
