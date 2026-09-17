@@ -104,6 +104,8 @@ Run only the sections affected by a change. Before testing, exit any installed o
 
 ### Start with Windows
 
+Run `powershell -NoProfile -ExecutionPolicy Bypass -File tests\StartupScriptTests.ps1` for isolated startup-script provider fixtures. These exercise registration, removal, status, identity rejection, Windows approval, command validation, and independent verification/rollback without touching the registry. Run `.\startup.ps1 -Status` on the normal desktop to check the real provider and inventory without altering registration. Preserve any existing live registration and resident app during script-only verification; tray/lifecycle checks below apply when changing native integration.
+
 1. Enable the tray option and confirm the current executable appears as the quoted `ApplicationQuickDial` value under the current-user Run key.
 2. Disable the option and confirm the value is removed.
 

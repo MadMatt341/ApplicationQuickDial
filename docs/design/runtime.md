@@ -45,6 +45,23 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 
 The menu is checked only when the stored value exactly matches the quoted path of the running executable.
 
+The repository's `startup.ps1` manages the same value, without launching or stopping the application. From a normal interactive 64-bit PowerShell:
+
+```powershell
+.\startup.ps1                                      # Enable build\Release\ApplicationQuickDial.exe
+.\startup.ps1 -ExecutablePath 'C:\Apps\ApplicationQuickDial.exe'
+.\startup.ps1 -Status                              # Read-only registration and approval status
+.\startup.ps1 -Disable                             # Remove the Run value
+```
+
+`-Disable` and `-Status` are mutually exclusive. The default executable is relative to the script directory; an explicit executable must exist. The script quotes its absolute path, adds no arguments, and rejects commands longer than Windows' 260-character Run limit. Normal application launch does not enable startup.
+
+The script requires Explorer in the current session with the same SID as the calling account. It uses `StdRegProv` under that explicit `HKEY_USERS` SID (the intended user's HKCU) and independently checks `Win32_StartupCommand` before and after changes. A disagreement is an error, and failed changes attempt to restore and verify the previous Run value. Status does not require the default build to exist.
+
+Windows can independently disable startup through `Explorer\StartupApproved\Run`. The script reports this state and refuses to enable a disabled or unrecognized approval record; enable it through Windows Settings after review. It never writes approval records. Registration verification does not prove a subsequent sign-in launch or override startup policies. The existing tray check reflects the Run command, not Windows' approval state.
+
+Use a permanent executable location. A linked Git worktree (a `.git` file) refuses default enabling: pass the stable executable explicitly with `-ExecutablePath`. Status and disable remain available there. Verification must preserve live registrations and running applications; use isolated provider fixtures for mutation tests. No scheduled task or service is created.
+
 ## Ownership and cleanup
 
 `LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, and `HookManager`. Window destruction requests discovery cancellation and stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled icon operation occupies only its bounded worker slot until it returns or the process exits; discovery runs in the separately supervised helper described above.

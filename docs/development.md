@@ -49,3 +49,5 @@ Run `.\build\Release\ApplicationQuickDial.exe` on the user's normal desktop. It 
 | Performance | `benchmarks/PerformanceBenchmarks.cpp` and affected subsystem | [Contract and measurements](performance.md) | Benchmark on normal desktop |
 
 Detailed test commands and manual scenarios live in [testing.md](testing.md); do not run unrelated manual sections.
+
+For repository build sign-in registration, use [the startup script](design/runtime.md#tray-and-sign-in-integration).
