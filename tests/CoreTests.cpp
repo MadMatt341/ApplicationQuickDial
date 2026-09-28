@@ -1,5 +1,6 @@
 #include "Catalog.h"
 #include "HotkeyState.h"
+#include "MainMenu.h"
 #include "InstalledApps.h"
 #include "Search.h"
 
@@ -397,6 +398,21 @@ class TestAppEnumerator final : public Microsoft::WRL::RuntimeClass<
   HRESULT finalResult_;
 };
 
+void TestMainMenu() {
+  using quickdial::MenuItemId;
+  using quickdial::MenuPage;
+  const auto root = quickdial::MenuItems(MenuPage::Main, L"   ");
+  Check(root == std::vector{MenuItemId::System}, "empty main menu offers System independently of the app catalog");
+  Check(quickdial::MenuItems(MenuPage::Main, L"app").empty(), "typing on the main page keeps application search scoped to apps");
+  Check(quickdial::MenuItems(MenuPage::System, L"") == std::vector{MenuItemId::ShutDown, MenuItemId::Restart},
+        "System lists shut down then restart");
+  Check(quickdial::MenuItems(MenuPage::System, L" SHUTDOWN ") == std::vector{MenuItemId::ShutDown},
+        "shutdown alias accepts case folding and surrounding whitespace");
+  Check(quickdial::MenuItems(MenuPage::System, L"reboot") == std::vector{MenuItemId::Restart},
+        "System search recognizes reboot as restart");
+  Check(quickdial::MenuItems(MenuPage::System, L"calculator").empty(), "unmatched System queries have no selectable action");
+}
+
 void TestDiscoveryFailures() {
   for (const int validItems : {0, 1}) {
     auto enumerator = Microsoft::WRL::Make<TestAppEnumerator>(validItems, E_FAIL);
@@ -439,6 +455,7 @@ int main(int argc, char* argv[]) {
   TestInstalledApplicationMerge();
   TestSearchRanking();
   TestHotkeyState();
+  TestMainMenu();
   TestDiscoveryFailures();
 
   if (failures == 0) {

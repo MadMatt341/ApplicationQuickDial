@@ -2,6 +2,8 @@
 
 #include "Catalog.h"
 #include "IconLoader.h"
+#include "MainMenu.h"
+#include "SystemPower.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -9,6 +11,7 @@
 #include <wrl/client.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <stop_token>
@@ -27,7 +30,7 @@ inline constexpr wchar_t kWindowClassName[] = L"ApplicationQuickDial.LauncherWin
 
 class LauncherApp {
  public:
-  explicit LauncherApp(HANDLE benchmarkPresentedEvent = nullptr, std::filesystem::path catalogPath = {});
+  explicit LauncherApp(HANDLE benchmarkPresentedEvent = nullptr, std::filesystem::path catalogPath = {}, bool shellMode = false);
   ~LauncherApp();
 
   LauncherApp(const LauncherApp&) = delete;
@@ -52,7 +55,8 @@ class LauncherApp {
 
   void AddTrayIcon();
   void RemoveTrayIcon();
-  void ShowTrayMenu();
+  void ShowTrayMenu(bool atLauncher = false);
+  void EnterShellMode();
   void HandleTrayCommand(UINT command);
   void ShowNotification(std::wstring_view title, std::wstring_view message);
 
@@ -71,12 +75,19 @@ class LauncherApp {
   void StartBackgroundTimer();
   void StopBackgroundTasks();
   void UpdateResults();
+  void UpdateSearchHint();
+  bool IsMenuView() const;
+  std::size_t ResultCount() const;
+  float ResultsTop() const;
+  void GoBack();
+  void ExecutePendingPowerAction();
   void MoveSelection(int delta);
   void EnsureSelectionVisible();
   void ScrollResults(int wheelDelta);
   std::size_t VisibleResultRows() const;
   std::optional<std::size_t> ResultAtY(float y) const;
   void LaunchSelection();
+  void ExecutePendingLaunch();
   bool LaunchApplication(const ApplicationEntry& application, std::wstring& error);
   void OpenCatalog();
 
@@ -96,6 +107,7 @@ class LauncherApp {
   std::wstring fontFamily_;
   bool lightTheme_ = false;
   bool trayIconAdded_ = false;
+  bool shellMode_ = false;
   UINT taskbarCreatedMessage_ = 0;
   HANDLE benchmarkPresentedEvent_ = nullptr;
 
@@ -114,6 +126,12 @@ class LauncherApp {
   bool hasValidCatalog_ = false;
   std::wstring catalogError_;
   std::wstring launchError_;
+  std::optional<ApplicationEntry> pendingLaunch_;
+  MenuPage menuPage_ = MenuPage::Main;
+  std::vector<MenuItemId> menuItems_;
+  std::optional<MenuItemId> pendingPowerAction_;
+  bool powerActionActive_ = false;
+  std::function<bool(MenuItemId, std::wstring&)> requestPowerAction_ = RequestSystemPowerAction;
   bool queryHasText_ = false;
   std::vector<std::size_t> results_;
   std::size_t selectedResult_ = 0;

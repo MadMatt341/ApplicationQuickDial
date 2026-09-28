@@ -1,6 +1,8 @@
 #include "LauncherApp.h"
+#include <dwmapi.h>
 #include "LauncherVisualStyle.h"
 #include <algorithm>
+#include <atomic>
 #include "InstalledApps.h"
 #include "BackgroundTasks.h"
 #include "AppMessages.h"
@@ -9,6 +11,7 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <propkey.h>
 
 #include <filesystem>
 #include <fstream>
@@ -105,42 +108,12 @@ class LauncherAppTestAccess {
   }
 
  public:
-  static int Run(const std::filesystem::path& path, const std::filesystem::path& iconPath,
-                 bool checkInstallation) {
+  static int CheckSearch(LauncherApp& app) {
     int failures = 0;
     const auto check = [&failures](bool condition, const char* description) {
       if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
     };
-    const std::unique_ptr<void, decltype(&CloseHandle)> benchmarkEvent(
-        CreateEventW(nullptr, TRUE, FALSE, nullptr), CloseHandle);
-    if (!benchmarkEvent) {
-      std::cerr << "FAILED: benchmark test event creation\n";
-      return 1;
-    }
-    LauncherApp app(nullptr, path);
-    if (!app.Initialize(GetModuleHandleW(nullptr))) {
-      std::cerr << "FAILED: launcher initialization\n";
-      return 1;
-    }
-    check(!IsWindowVisible(app.window_), "startup keeps the launcher hidden");
-    check(app.trayIconAdded_, "startup registers the tray icon");
-    check(app.HandleMessage(kMessageBenchmarkState, 0, 0) == 0,
-          "ordinary launches do not expose the benchmark protocol");
-    app.benchmarkPresentedEvent_ = benchmarkEvent.get();
-    check(app.HandleMessage(kMessageBenchmarkState, 0, 0) == kBenchmarkAvailable,
-          "a hidden launcher without discovery reports settled readiness");
-    app.discoveryPending_ = true;
-    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
-          "the benchmark cannot sample while discovery is unfinished");
-    app.discoveryPending_ = false;
-    check(app.iconTasks_->Submit([] { return [] {}; }), "benchmark pending-state job is accepted");
-    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
-          "queued and undispatched icon work prevents a settled sample");
-    check(Drain(app), "benchmark pending-state job drains");
     app.ShowLauncher();
-    check(IsWindowVisible(app.window_), "show request makes the launcher visible");
-    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
-          "an invalidated visible frame prevents a settled sample");
     check(app.results_.empty(), "opening shows no application results");
     RECT emptyBounds{};
     GetClientRect(app.window_, &emptyBounds);
@@ -148,12 +121,12 @@ class LauncherAppTestAccess {
     check(app.results_.size() == 2, "typing shows matching applications");
     RECT populatedBounds{};
     GetClientRect(app.window_, &populatedBounds);
-    check(populatedBounds.bottom > emptyBounds.bottom, "typing expands the search-only window");
+    check(populatedBounds.bottom > emptyBounds.bottom, "typing expands from the main-menu height");
     SetWindowTextW(app.edit_, L"   ");
     RECT clearedBounds{};
     GetClientRect(app.window_, &clearedBounds);
     check(app.results_.empty() && clearedBounds.bottom == emptyBounds.bottom,
-          "clearing to whitespace restores the search-only height");
+          "clearing to whitespace restores the main-menu height");
     SetWindowTextW(app.edit_, L"Test");
 
     const auto originalCatalog = app.catalog_;
@@ -191,9 +164,363 @@ class LauncherAppTestAccess {
           "mouse wheel scrolls according to Windows preferences");
     app.catalog_ = originalCatalog;
     SetWindowTextW(app.edit_, L"");
-    check(app.results_.empty() && app.firstVisibleResult_ == 0 && app.VisibleResultRows() == 0,
-          "clearing a scrolled search restores the search-only state");
+    check(app.results_.empty() && app.firstVisibleResult_ == 0 && app.VisibleResultRows() == 1,
+          "clearing a scrolled search restores the System row");
     SetWindowTextW(app.edit_, L"Test");
+
+    return failures;
+  }
+
+  static int CheckMainMenu(LauncherApp& app) {
+    int failures = 0;
+    const auto check = [&failures](bool condition, const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    app.ShowLauncher();
+    check(app.VisibleResultRows() == 1 && app.menuItems_ == std::vector{MenuItemId::System},
+          "empty search displays the System row below the divider");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 0);
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 1L << 30);
+    check(!app.pendingPowerAction_, "holding Enter cannot enter a section and activate its first power action");
+    check(app.menuPage_ == MenuPage::System && app.VisibleResultRows() == 2 &&
+          app.menuItems_ == std::vector{MenuItemId::ShutDown, MenuItemId::Restart},
+          "Down and Enter open the System submenu");
+    check(!app.ResultAtY(visuals::kSearchHeight + 1) && app.ResultAtY(app.ResultsTop() + 1) == 0,
+          "submenu header is separate from action hit testing");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);
+    check(app.selectedResult_ == 1, "Down selects Restart");
+    const bool validCatalog = app.hasValidCatalog_;
+    app.hasValidCatalog_ = false;
+    app.UpdateResults();
+    check(app.menuItems_.size() == 2, "power actions remain available without a valid app catalog");
+    app.hasValidCatalog_ = validCatalog;
+    SetWindowTextW(app.edit_, L"reboot");
+    check(app.menuItems_ == std::vector{MenuItemId::Restart}, "System search filters to the reboot action");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_ESCAPE, 0);
+    check(app.menuPage_ == MenuPage::Main && IsWindowVisible(app.window_) && !app.queryHasText_,
+          "Escape returns to the empty main menu without hiding");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_ESCAPE, 1L << 30);
+    check(IsWindowVisible(app.window_), "holding Escape cannot return to main and immediately dismiss it");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 0);
+    const auto click = MAKELPARAM(static_cast<WORD>(32 * app.dpi_ / 96),
+        static_cast<WORD>((visuals::kSearchHeight + 18) * app.dpi_ / 96));
+    app.HandleMessage(WM_LBUTTONDOWN, 0, click);
+    check(app.menuPage_ == MenuPage::Main && IsWindowVisible(app.window_), "clicking the back arrow returns to main");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_ESCAPE, 0);
+    check(!IsWindowVisible(app.window_), "Escape on main dismisses the launcher");
+
+    int requests = 0;
+    MenuItemId captured = MenuItemId::System;
+    app.requestPowerAction_ = [&](MenuItemId action, std::wstring& error) {
+      ++requests;
+      captured = action;
+      // Nested input while a power request is active cannot start another request.
+      app.LaunchSelection();
+      error = L"Simulated power request failure";
+      return false;
+    };
+    app.ShowLauncher();
+    app.LaunchSelection();
+    app.LaunchSelection();
+    app.MoveSelection(1);
+    app.LaunchSelection();
+    check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }), "queued power request completes");
+    check(requests == 1 && captured == MenuItemId::ShutDown && IsWindowVisible(app.window_),
+          "duplicate Enter coalesces and preserves the selected Shut down action");
+    app.LaunchSelection();
+    check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }), "Restart request completes without confirmation");
+    check(requests == 2 && captured == MenuItemId::Restart && IsWindowVisible(app.window_) &&
+          app.launchError_ == L"Simulated power request failure", "restart request failures remain visible and actionable");
+    app.LaunchSelection();
+    app.GoBack();
+    check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }) && requests == 2,
+          "Back cancels a queued power action before dispatch");
+    app.LaunchSelection();
+    app.LaunchSelection();
+    app.HideLauncher();
+    app.ExecutePendingPowerAction();
+    check(requests == 2, "hiding cancels a queued power request");
+    app.requestPowerAction_ = [&](MenuItemId, std::wstring&) { ++requests; return true; };
+    app.ShowLauncher();
+    app.LaunchSelection();
+    app.LaunchSelection();
+    app.ExecutePendingPowerAction();
+    check(requests == 3 && !IsWindowVisible(app.window_), "an accepted fake power request dismisses the launcher");
+    std::wstring invalidActionError;
+    check(!RequestSystemPowerAction(MenuItemId::System, invalidActionError) && !invalidActionError.empty(),
+          "the power adapter rejects non-power menu items before touching privileges or Windows shutdown");
+    app.requestPowerAction_ = RequestSystemPowerAction;
+    app.ShowLauncher();
+    check(app.menuPage_ == MenuPage::Main, "reopening always returns to the main menu");
+    return failures;
+  }
+
+  static bool CaptureMenu(LauncherApp& app, const std::filesystem::path& path, bool light, UINT dpi) {
+    app.lightTheme_ = light;
+    if (app.editBackgroundBrush_) DeleteObject(app.editBackgroundBrush_);
+    app.editBackgroundBrush_ = CreateSolidBrush(visuals::GetPalette(light).editBackground);
+    app.dpi_ = dpi;
+    app.ReleaseDeviceResources();
+    const auto height = static_cast<int>((app.ResultsTop() + app.VisibleResultRows() * visuals::kResultHeight +
+        visuals::kBottomPadding) * dpi / 96.0f);
+    SetWindowPos(app.window_, HWND_TOPMOST, 0, 0, static_cast<int>(visuals::kWindowWidth * dpi / 96), height,
+                 SWP_NOMOVE | SWP_NOACTIVATE);
+    app.LayoutEditControl();
+    InvalidateRect(app.window_, nullptr, FALSE);
+    InvalidateRect(app.edit_, nullptr, TRUE);
+    UpdateWindow(app.window_);
+    UpdateWindow(app.edit_);
+    DwmFlush();
+    RECT bounds{};
+    GetClientRect(app.window_, &bounds);
+    const int width = bounds.right;
+    const int pixelsHigh = bounds.bottom;
+    HDC source = GetDC(app.window_);
+    HDC destination = source ? CreateCompatibleDC(source) : nullptr;
+    HBITMAP bitmap = source ? CreateCompatibleBitmap(source, width, pixelsHigh) : nullptr;
+    HGDIOBJ previous = bitmap && destination ? SelectObject(destination, bitmap) : nullptr;
+    bool success = previous && BitBlt(destination, 0, 0, width, pixelsHigh, source, 0, 0, SRCCOPY);
+    if (previous) SelectObject(destination, previous);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = pixelsHigh;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * pixelsHigh);
+    success = success && GetDIBits(source, bitmap, 0, pixelsHigh, pixels.data(), &info, DIB_RGB_COLORS) == pixelsHigh;
+    if (bitmap) DeleteObject(bitmap);
+    if (destination) DeleteDC(destination);
+    if (source) ReleaseDC(app.window_, source);
+    if (!success) return false;
+    BITMAPFILEHEADER header{};
+    header.bfType = 0x4d42;
+    header.bfOffBits = sizeof(header) + sizeof(info.bmiHeader);
+    header.bfSize = header.bfOffBits + static_cast<DWORD>(pixels.size() * sizeof(pixels[0]));
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.write(reinterpret_cast<const char*>(&info.bmiHeader), sizeof(info.bmiHeader));
+    output.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * sizeof(pixels[0]));
+    return static_cast<bool>(output);
+  }
+
+  static int RunMainMenuChecks(const std::filesystem::path& path, const std::filesystem::path& snapshots) {
+    LauncherApp app(nullptr, path, true);
+    if (!app.Initialize(GetModuleHandleW(nullptr))) {
+      std::cerr << "FAILED: main-menu launcher initialization\n";
+      return 1;
+    }
+    int failures = 0;
+    if (IsWindowVisible(app.window_) || app.trayIconAdded_) {
+      ++failures;
+      std::cerr << "FAILED: shell mode starts hidden without a tray icon\n";
+    }
+    failures += CheckSearch(app);
+    failures += CheckMainMenu(app);
+    if (!snapshots.empty()) {
+      std::filesystem::create_directories(snapshots);
+      for (const bool light : {false, true}) {
+        for (const UINT dpi : {96U, 144U}) {
+          app.ShowLauncher();
+          const auto suffix = std::wstring(light ? L"light-" : L"dark-") + std::to_wstring(dpi) + L".bmp";
+          if (!CaptureMenu(app, snapshots / (L"main-" + suffix), light, dpi)) ++failures;
+          app.LaunchSelection();
+          if (!CaptureMenu(app, snapshots / (L"system-" + suffix), light, dpi)) ++failures;
+        }
+      }
+    }
+    DestroyWindow(app.window_);
+    if (failures == 0) std::cout << "All main-menu integration checks passed; no Windows power request was sent.\n";
+    return failures == 0 ? 0 : 1;
+  }
+
+  static bool CheckShellLaunch(LauncherApp& app, const std::filesystem::path& directory, bool checkAppsFolder) {
+    wchar_t executable[32768]{};
+    if (!GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)))) return false;
+    const auto marker = directory / L"launch result.txt";
+    ApplicationEntry fixture;
+    fixture.name = L"Quick Dial launch fixture";
+    fixture.target = executable;
+    fixture.arguments = {L"--launched-fixture", marker.wstring(), L"two words", L"quote\"inside"};
+    std::wstring error;
+    const auto completed = [&] {
+      if (!std::filesystem::exists(marker)) return false;
+      std::ifstream input(marker);
+      std::string content((std::istreambuf_iterator<char>(input)), {});
+      return content == "two words\nquote\"inside\n";
+    };
+    if (!app.LaunchApplication(fixture, error) || !PumpUntil(app, completed)) return false;
+    std::filesystem::remove(marker);
+    PWSTR programs = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr, &programs))) return false;
+    const std::wstring name = L"QuickDial-launch-test-" + std::to_wstring(GetCurrentProcessId()) + L".lnk";
+    const auto shortcut = std::filesystem::path(programs) / name;
+    CoTaskMemFree(programs);
+    if (std::filesystem::exists(shortcut)) return false;
+    const auto cleanup = [&shortcut, &marker](void*) {
+      std::error_code ignored;
+      std::filesystem::remove(shortcut, ignored);
+      std::filesystem::remove(marker, ignored);
+    };
+    const std::unique_ptr<void, decltype(cleanup)> guard(&app, cleanup);
+    Microsoft::WRL::ComPtr<IShellLinkW> link;
+    Microsoft::WRL::ComPtr<IPersistFile> file;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(link.ReleaseAndGetAddressOf()))) ||
+        FAILED(link->SetPath(executable)) ||
+        FAILED(link->SetArguments((L"--launched-fixture \"" + marker.wstring() + L"\" \"two words\" \"quote\\\"inside\"").c_str())) ||
+        FAILED(link.As(&file)) || FAILED(file->Save(shortcut.c_str(), TRUE))) return false;
+    Microsoft::WRL::ComPtr<IPropertyStore> properties;
+    const std::wstring identity = L"QuickDial.LaunchTest." + std::to_wstring(GetCurrentProcessId());
+    PROPVARIANT identityValue{};
+    identityValue.vt = VT_LPWSTR;
+    identityValue.pwszVal = const_cast<PWSTR>(identity.c_str());
+    if (FAILED(link.As(&properties)) || FAILED(properties->SetValue(PKEY_AppUserModel_ID, identityValue)) ||
+        FAILED(properties->Commit()) || FAILED(file->Save(shortcut.c_str(), TRUE))) return false;
+    SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, shortcut.c_str(), nullptr);
+    fixture.target = shortcut.wstring();
+    fixture.arguments.clear();
+    if (!app.LaunchApplication(fixture, error) || !PumpUntil(app, completed)) {
+      std::wcerr << L"Direct shortcut launch failed: " << error << L'\n';
+      return false;
+    }
+    std::filesystem::remove(marker);
+    if (!checkAppsFolder) {
+      std::cout << "SKIP: newly registered desktop Apps-folder shortcut needs Explorer; direct shortcut verified\n";
+      return true;
+    }
+    fixture.target = L"shell:AppsFolder\\" + identity;
+    if (!PumpUntil(app, [&] { return app.LaunchApplication(fixture, error); })) {
+      std::wcerr << L"Shell fixture launch failed: " << error << L'\n';
+      return false;
+    }
+    return PumpUntil(app, completed);
+  }
+
+  static bool CheckDeferredActivation(LauncherApp& app, const ApplicationEntry& fixture) {
+    // Stay hidden so unrelated foreground changes cannot clear the error state.
+    app.HideLauncher();
+    app.catalog_.applications = {fixture};
+    app.hasValidCatalog_ = true;
+    app.menuPage_ = MenuPage::Main;
+    SetWindowTextW(app.edit_, fixture.name.c_str());
+    std::atomic<bool> senderDone = false;
+    std::atomic<bool> sent = false;
+    std::thread sender([&] {
+      DWORD_PTR reply = 0;
+      bool success = true;
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        success = success && SendMessageTimeoutW(app.edit_, WM_KEYDOWN, VK_RETURN, 0,
+                                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &reply) != 0;
+      }
+      sent = success;
+      senderDone = true;
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(7);
+    while (!senderDone && std::chrono::steady_clock::now() < deadline) {
+      // PeekMessage services sent messages but leaves the posted launch queued.
+      MSG message{};
+      PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    sender.join();
+    if (!sent || !app.pendingLaunch_ || !app.launchError_.empty()) {
+      std::wcerr << L"Deferred send state: sent=" << sent << L" pending=" << app.pendingLaunch_.has_value()
+                 << L" error=" << app.launchError_ << L'\n';
+      return false;
+    }
+    const auto queuedName = app.pendingLaunch_->name;
+    app.catalog_.applications[0].name = L"Changed selection must not launch";
+    if (!PumpUntil(app, [&] { return !app.pendingLaunch_.has_value(); })) {
+      std::cerr << "FAILED: deferred activation did not finish\n";
+      return false;
+    }
+    const std::wstring expected = L"Could not activate " + queuedName + L": ";
+    if (!app.launchError_.starts_with(expected)) {
+      std::wcerr << L"Deferred activation error: " << app.launchError_ << L'\n';
+      return false;
+    }
+    // Extra Enter requests must not leave another activation queued.
+    MSG remaining{};
+    return !PeekMessageW(&remaining, app.window_, kMessageLaunchSelection, kMessageLaunchSelection, PM_NOREMOVE);
+  }
+
+  static int CheckApplicationLaunches(LauncherApp& app, const std::filesystem::path& directory,
+                                      bool checkAppsFolder = true) {
+    int failures = 0;
+    const auto check = [&failures](bool condition, const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    check(CheckShellLaunch(app, directory, checkAppsFolder), "executable and shortcut launches preserve fixture arguments");
+    ApplicationEntry missingPackage;
+    missingPackage.name = L"Missing packaged fixture";
+    missingPackage.target = L"SHELL:appsfolder\\QuickDial.LaunchTest_123456789abcd!MissingApp";
+    std::wstring activationError;
+    check(!app.LaunchApplication(missingPackage, activationError) &&
+              activationError.starts_with(L"Could not activate Missing packaged fixture: "),
+          "packaged Apps-folder entries use direct activation and report failure without Shell fallback");
+    ApplicationEntry missing;
+    missing.name = L"Missing shell fixture";
+    missing.target = L"shell:Programs\\QuickDial-does-not-exist-947362.lnk";
+    std::wstring launchError;
+    check(!app.LaunchApplication(missing, launchError) && !launchError.empty(),
+          "invalid Shell target produces an actionable error");
+    check(CheckDeferredActivation(app, missingPackage),
+          "synchronous Enter defers activation, coalesces repeats, preserves the selected entry, and retains failure status");
+    return failures;
+  }
+
+  static int RunLaunchChecks(const std::filesystem::path& path) {
+    LauncherApp app(nullptr, path, true);
+    if (!app.Initialize(GetModuleHandleW(nullptr))) {
+      std::cerr << "FAILED: shell-mode launcher initialization\n";
+      return 1;
+    }
+    const int failures = CheckApplicationLaunches(app, path.parent_path(), false);
+    DestroyWindow(app.window_);
+    if (!failures) std::cout << "Launcher launch checks passed\n";
+    return failures;
+  }
+
+  static int Run(const std::filesystem::path& path, const std::filesystem::path& iconPath,
+                 bool checkInstallation) {
+    int failures = 0;
+    const auto check = [&failures](bool condition, const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    const std::unique_ptr<void, decltype(&CloseHandle)> benchmarkEvent(
+        CreateEventW(nullptr, TRUE, FALSE, nullptr), CloseHandle);
+    if (!benchmarkEvent) {
+      std::cerr << "FAILED: benchmark test event creation\n";
+      return 1;
+    }
+    LauncherApp app(nullptr, path);
+    if (!app.Initialize(GetModuleHandleW(nullptr))) {
+      std::cerr << "FAILED: launcher initialization\n";
+      return 1;
+    }
+    check(!IsWindowVisible(app.window_), "startup keeps the launcher hidden");
+    check(app.trayIconAdded_, "startup registers the tray icon");
+    check(app.HandleMessage(kMessageBenchmarkState, 0, 0) == 0,
+          "ordinary launches do not expose the benchmark protocol");
+    app.benchmarkPresentedEvent_ = benchmarkEvent.get();
+    check(app.HandleMessage(kMessageBenchmarkState, 0, 0) == kBenchmarkAvailable,
+          "a hidden launcher without discovery reports settled readiness");
+    app.discoveryPending_ = true;
+    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
+          "the benchmark cannot sample while discovery is unfinished");
+    app.discoveryPending_ = false;
+    check(app.iconTasks_->Submit([] { return [] {}; }), "benchmark pending-state job is accepted");
+    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
+          "queued and undispatched icon work prevents a settled sample");
+    check(Drain(app), "benchmark pending-state job drains");
+    app.ShowLauncher();
+    check(IsWindowVisible(app.window_), "show request makes the launcher visible");
+    check((app.HandleMessage(kMessageBenchmarkState, 0, 0) & kBenchmarkPending) != 0,
+          "an invalidated visible frame prevents a settled sample");
+    failures += CheckSearch(app);
 
     // Exercise the real completion path without depending on installed software.
     app.configuredCatalog_.discoverInstalled = true;
@@ -374,6 +701,33 @@ class LauncherAppTestAccess {
               "reopening reuses cached pixels without another worker job");
       }
     }
+    check(app.HandleMessage(kMessageEnterShellMode, 0, 0) == 1, "shell-mode handoff is acknowledged");
+    check(!IsWindowVisible(app.window_) && !app.trayIconAdded_, "shell-mode handoff hides the launcher and removes its tray icon");
+    app.ShowLauncher();
+    check(IsWindowVisible(app.window_), "an explicit open still shows the shell-mode launcher");
+    app.HideLauncher();
+    app.HandleMessage(app.taskbarCreatedMessage_, 0, 0);
+    check(!app.trayIconAdded_, "Explorer recreation does not add a shell-mode tray icon");
+    app.ShowNotification(L"Test notice", L"Visible without Explorer");
+    check(IsWindowVisible(app.window_) && app.launchError_.find(L"Visible without Explorer") != std::wstring::npos,
+          "tray-free notifications appear in the launcher");
+    std::atomic<bool> menuSeen = false;
+    std::thread menuObserver([&] {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (std::chrono::steady_clock::now() < deadline) {
+        HWND menu = FindWindowW(L"#32768", nullptr);
+        DWORD pid = 0;
+        if (menu) GetWindowThreadProcessId(menu, &pid);
+        if (pid == GetCurrentProcessId()) { menuSeen = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      PostMessageW(app.window_, WM_CANCELMODE, 0, 0);
+    });
+    SendMessageW(app.edit_, WM_SYSKEYDOWN, VK_F10, 0);
+    menuObserver.join();
+    check(menuSeen, "F10 opens the real launcher menu without a tray");
+    failures += CheckApplicationLaunches(app, path.parent_path());
+    failures += CheckMainMenu(app);
     DestroyWindow(app.window_);
     check(!app.iconTasks_->HasPending() && !app.discoveryTasks_->HasPending(),
           "window destruction cancels its background queues");
@@ -387,6 +741,15 @@ class LauncherAppTestAccess {
 }  // namespace quickdial
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string_view(argv[1]) == "--launched-fixture") {
+    int count = 0;
+    PWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!arguments || count != 5) { if (arguments) LocalFree(arguments); return 2; }
+    std::ofstream marker(std::filesystem::path(arguments[2]), std::ios::binary);
+    marker << winrt::to_string(arguments[3]) << '\n' << winrt::to_string(arguments[4]) << '\n';
+    LocalFree(arguments);
+    return marker ? 0 : 3;
+  }
   if (const auto helperResult = quickdial::RunDiscoveryHelperIfRequested()) return *helperResult;
   winrt::init_apartment(winrt::apartment_type::single_threaded);
   const auto directory = std::filesystem::temp_directory_path() /
@@ -416,7 +779,10 @@ int main(int argc, char** argv) {
                      << R"({"name":"Test Alpha","target":"alpha.exe"},)"
                      << R"({"name":"Test Bravo","target":"bravo.exe"}]})";
   const bool checkInstallation = argc == 2 && std::string_view(argv[1]) == "--check-installation";
-  const int result = quickdial::LauncherAppTestAccess::Run(path, iconPath, checkInstallation);
+  const bool checkLaunching = argc == 2 && std::string_view(argv[1]) == "--check-launching";
+  const bool checkMainMenu = argc >= 2 && std::string_view(argv[1]) == "--check-main-menu";
+  const int result = checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
+                                   : quickdial::LauncherAppTestAccess::Run(path, iconPath, checkInstallation);
   std::filesystem::remove(path);
   std::filesystem::remove(iconPath);
   std::filesystem::remove(directory);

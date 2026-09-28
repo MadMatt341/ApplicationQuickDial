@@ -12,6 +12,11 @@ inline constexpr UINT kMessageBackgroundComplete = WM_APP + 5;
 // Read-only diagnostic, enabled only for launches with benchmark events.
 inline constexpr UINT kMessageBenchmarkState = WM_APP + 6;
 inline constexpr UINT kMessageInstalledApplicationsChanged = WM_APP + 7;
+inline constexpr UINT kMessageEnterShellMode = WM_APP + 8;
+// Internal queued launch; the LauncherApp owns the selected entry, with no payload.
+inline constexpr UINT kMessageLaunchSelection = WM_APP + 9;
+// Internal queued power action; the owner captures it before dispatch.
+inline constexpr UINT kMessageSystemPowerAction = WM_APP + 10;
 inline constexpr LRESULT kBenchmarkAvailable = 1;
 inline constexpr LRESULT kBenchmarkPending = 2;
 inline constexpr LRESULT kBenchmarkFailed = 4;

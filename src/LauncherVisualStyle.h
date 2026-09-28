@@ -11,6 +11,7 @@ namespace quickdial::visuals {
 // All layout values are device-independent pixels.
 inline constexpr float kWindowWidth = 620.0f;
 inline constexpr float kSearchHeight = 64.0f;
+inline constexpr float kMenuHeaderHeight = 36.0f;
 inline constexpr float kResultHeight = 50.0f;
 inline constexpr float kBottomPadding = 8.0f;
 inline constexpr float kStatusHeight = 26.0f;

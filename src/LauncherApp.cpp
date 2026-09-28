@@ -10,12 +10,14 @@
 #include "Search.h"
 #include "StartupManager.h"
 
+#include <appmodel.h>
 #include <windowsx.h>
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <array>
@@ -128,8 +130,8 @@ bool ReadLightThemePreference() {
 
 }  // namespace
 
-LauncherApp::LauncherApp(HANDLE benchmarkPresentedEvent, std::filesystem::path catalogPath)
-    : benchmarkPresentedEvent_(benchmarkPresentedEvent), catalogPath_(std::move(catalogPath)) {}
+LauncherApp::LauncherApp(HANDLE benchmarkPresentedEvent, std::filesystem::path catalogPath, bool shellMode)
+    : shellMode_(shellMode), benchmarkPresentedEvent_(benchmarkPresentedEvent), catalogPath_(std::move(catalogPath)) {}
 
 LauncherApp::~LauncherApp() {
   StopBackgroundTasks();
@@ -167,10 +169,12 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
   AddTrayIcon();
 
   hookManager_ = std::make_unique<HookManager>(window_);
-  if (!hookManager_->Start()) {
-    ShowNotification(L"Application Quick Dial", L"Win+Space could not be captured. Use the tray icon to open the launcher.");
-  }
+  const bool hookReady = hookManager_->Start();
   ReloadCatalog();
+  if (shellMode_) EnterShellMode();
+  if (!hookReady) {
+    ShowNotification(L"Application Quick Dial", L"Win+Space could not be captured. Run Quick Dial again to open it.");
+  }
   return true;
 }
 
@@ -290,7 +294,7 @@ void LauncherApp::LayoutEditControl() {
 void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
   const bool hasMessage = !catalogError_.empty() || !launchError_.empty();
   const std::size_t visibleRows = VisibleResultRows();
-  const float heightDip = visuals::kSearchHeight + static_cast<float>(visibleRows) * visuals::kResultHeight +
+  const float heightDip = ResultsTop() + static_cast<float>(visibleRows) * visuals::kResultHeight +
                           visuals::kBottomPadding + (hasMessage ? visuals::kStatusHeight : 0.0f);
 
   if (chooseMonitor || anchorMonitor_ == nullptr) {
@@ -328,6 +332,7 @@ void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
 }
 
 void LauncherApp::AddTrayIcon() {
+  if (shellMode_) return;
   if (trayIconAdded_) {
     return;
   }
@@ -360,7 +365,15 @@ void LauncherApp::RemoveTrayIcon() {
   trayIconAdded_ = false;
 }
 
-void LauncherApp::ShowTrayMenu() {
+void LauncherApp::EnterShellMode() {
+  shellMode_ = true;
+  RemoveTrayIcon();
+  KillTimer(window_, kTrayRetryTimer);
+  UpdateSearchHint();
+  HideLauncher();
+}
+
+void LauncherApp::ShowTrayMenu(bool atLauncher) {
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) {
     return;
@@ -369,13 +382,19 @@ void LauncherApp::ShowTrayMenu() {
   AppendMenuW(menu, MF_STRING, kCommandOpenCatalog, L"Open app list");
   AppendMenuW(menu, MF_STRING, kCommandReloadCatalog, L"Reload app list");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING | (IsStartWithWindowsEnabled() ? MF_CHECKED : MF_UNCHECKED),
-              kCommandStartWithWindows, L"Start with Windows");
+  if (!shellMode_) {
+    AppendMenuW(menu, MF_STRING | (IsStartWithWindowsEnabled() ? MF_CHECKED : MF_UNCHECKED),
+                kCommandStartWithWindows, L"Start with Windows");
+  }
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kCommandExit, L"Exit");
 
   POINT point{};
   GetCursorPos(&point);
+  if (atLauncher) {
+    RECT bounds{};
+    if (GetWindowRect(window_, &bounds)) point = {bounds.left, bounds.bottom};
+  }
   SetForegroundWindow(window_);
   const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                                       point.x, point.y, 0, window_, nullptr);
@@ -435,6 +454,10 @@ void LauncherApp::HandleTrayCommand(UINT command) {
 
 void LauncherApp::ShowNotification(std::wstring_view title, std::wstring_view message) {
   if (!trayIconAdded_) {
+    ShowLauncher();
+    launchError_ = std::wstring(title) + L": " + std::wstring(message);
+    ResizeAndPosition(false);
+    InvalidateRect(window_, nullptr, FALSE);
     return;
   }
   NOTIFYICONDATAW icon{};
@@ -449,6 +472,9 @@ void LauncherApp::ShowNotification(std::wstring_view title, std::wstring_view me
 }
 
 void LauncherApp::ShowLauncher() {
+  pendingPowerAction_.reset();
+  menuPage_ = MenuPage::Main;
+  UpdateSearchHint();
   launchError_.clear();
   anchorMonitor_ = nullptr;
   ReloadCatalog();
@@ -465,6 +491,7 @@ void LauncherApp::ShowLauncher() {
 }
 
 void LauncherApp::HideLauncher() {
+  pendingPowerAction_.reset();
   if (IsWindowVisible(window_)) {
     ShowWindow(window_, SW_HIDE);
   }
@@ -512,7 +539,9 @@ void LauncherApp::ReloadCatalog(bool refreshInstalledApplications) {
 void LauncherApp::RebuildCatalog() {
   // Preserve selection and query if discovery completes while the user is typing.
   std::wstring selectedTarget;
-  if (selectedResult_ < results_.size() && results_[selectedResult_] < catalog_.applications.size()) {
+  const auto selectedMenuItem = IsMenuView() && selectedResult_ < menuItems_.size()
+      ? std::optional(menuItems_[selectedResult_]) : std::nullopt;
+  if (!IsMenuView() && selectedResult_ < results_.size() && results_[selectedResult_] < catalog_.applications.size()) {
     selectedTarget = catalog_.applications[results_[selectedResult_]].target;
   }
   catalog_ = MergeInstalledApplications(configuredCatalog_, installedApplications_);
@@ -522,6 +551,10 @@ void LauncherApp::RebuildCatalog() {
   iconCache_.clear();
   iconAttempted_.clear();
   UpdateResults();
+  if (selectedMenuItem) {
+    const auto item = std::find(menuItems_.begin(), menuItems_.end(), *selectedMenuItem);
+    if (item != menuItems_.end()) selectedResult_ = static_cast<std::size_t>(item - menuItems_.begin());
+  }
   for (std::size_t index = 0; index < results_.size(); ++index) {
     if (catalog_.applications[results_[index]].target == selectedTarget) {
       selectedResult_ = index;
@@ -684,7 +717,9 @@ void LauncherApp::UpdateResults() {
     query.resize(static_cast<std::size_t>(length));
   }
   queryHasText_ = std::any_of(query.begin(), query.end(), [](wchar_t c) { return !std::iswspace(c); });
-  results_ = hasValidCatalog_ ? RankApplications(catalog_, query) : std::vector<std::size_t>{};
+  results_ = menuPage_ == MenuPage::Main && hasValidCatalog_
+      ? RankApplications(catalog_, query) : std::vector<std::size_t>{};
+  menuItems_ = MenuItems(menuPage_, query);
   selectedResult_ = 0;
   firstVisibleResult_ = 0;
   wheelRemainder_ = 0;
@@ -695,10 +730,8 @@ void LauncherApp::UpdateResults() {
 }
 
 void LauncherApp::MoveSelection(int delta) {
-  if (results_.empty()) {
-    return;
-  }
-  const int count = static_cast<int>(results_.size());
+  if (ResultCount() == 0) return;
+  const int count = static_cast<int>(ResultCount());
   int selected = static_cast<int>(selectedResult_);
   selected = (selected + delta + count) % count;
   selectedResult_ = static_cast<std::size_t>(selected);
@@ -706,19 +739,51 @@ void LauncherApp::MoveSelection(int delta) {
   InvalidateRect(window_, nullptr, FALSE);
 }
 
+void LauncherApp::UpdateSearchHint() {
+  const wchar_t* hint = menuPage_ == MenuPage::System ? L"Search system actions" :
+      (shellMode_ ? L"Search applications (F10: menu)" : L"Search applications");
+  SendMessageW(edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(hint));
+}
+
+bool LauncherApp::IsMenuView() const {
+  return menuPage_ != MenuPage::Main || !queryHasText_;
+}
+
+std::size_t LauncherApp::ResultCount() const {
+  return IsMenuView() ? menuItems_.size() : results_.size();
+}
+
+float LauncherApp::ResultsTop() const {
+  return visuals::kSearchHeight + (menuPage_ == MenuPage::Main ? 0.0f : visuals::kMenuHeaderHeight);
+}
+
+void LauncherApp::GoBack() {
+  pendingPowerAction_.reset();
+  if (menuPage_ == MenuPage::Main) {
+    HideLauncher();
+    return;
+  }
+  menuPage_ = MenuPage::Main;
+  launchError_.clear();
+  UpdateSearchHint();
+  SetWindowTextW(edit_, L"");
+  UpdateResults();
+  SetFocus(edit_);
+}
+
 std::size_t LauncherApp::VisibleResultRows() const {
-  return queryHasText_ ? std::clamp<std::size_t>(results_.size(), 1, kMaximumVisibleResults) : 0;
+  return std::clamp<std::size_t>(ResultCount(), 1, kMaximumVisibleResults);
 }
 
 void LauncherApp::EnsureSelectionVisible() {
-  if (results_.empty()) {
+  if (ResultCount() == 0) {
     firstVisibleResult_ = 0;
     return;
   }
   if (selectedResult_ < firstVisibleResult_) firstVisibleResult_ = selectedResult_;
   else if (selectedResult_ >= firstVisibleResult_ + kMaximumVisibleResults)
     firstVisibleResult_ = selectedResult_ - kMaximumVisibleResults + 1;
-  const auto maximum = results_.size() > kMaximumVisibleResults ? results_.size() - kMaximumVisibleResults : 0;
+  const auto maximum = ResultCount() > kMaximumVisibleResults ? ResultCount() - kMaximumVisibleResults : 0;
   firstVisibleResult_ = std::min(firstVisibleResult_, maximum);
 }
 
@@ -726,11 +791,11 @@ void LauncherApp::ScrollResults(int wheelDelta) {
   wheelRemainder_ += wheelDelta;
   const int notches = wheelRemainder_ / WHEEL_DELTA;
   wheelRemainder_ %= WHEEL_DELTA;
-  if (!notches || results_.size() <= kMaximumVisibleResults) return;
+  if (!notches || ResultCount() <= kMaximumVisibleResults) return;
   UINT lines = 3;
   SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
   if (lines == WHEEL_PAGESCROLL) lines = static_cast<UINT>(kMaximumVisibleResults);
-  const auto maximum = static_cast<long long>(results_.size() - kMaximumVisibleResults);
+  const auto maximum = static_cast<long long>(ResultCount() - kMaximumVisibleResults);
   const auto next = static_cast<long long>(firstVisibleResult_) - static_cast<long long>(notches) * lines;
   firstVisibleResult_ = static_cast<std::size_t>(std::clamp(next, 0LL, maximum));
   selectedResult_ = std::clamp(selectedResult_, firstVisibleResult_, firstVisibleResult_ + kMaximumVisibleResults - 1);
@@ -738,14 +803,34 @@ void LauncherApp::ScrollResults(int wheelDelta) {
 }
 
 std::optional<std::size_t> LauncherApp::ResultAtY(float y) const {
-  if (y < visuals::kSearchHeight) return std::nullopt;
-  const auto row = static_cast<std::size_t>((y - visuals::kSearchHeight) / visuals::kResultHeight);
+  if (y < ResultsTop()) return std::nullopt;
+  const auto row = static_cast<std::size_t>((y - ResultsTop()) / visuals::kResultHeight);
   const auto result = firstVisibleResult_ + row;
-  if (row >= kMaximumVisibleResults || result >= results_.size()) return std::nullopt;
+  if (row >= kMaximumVisibleResults || result >= ResultCount()) return std::nullopt;
   return result;
 }
 
 void LauncherApp::LaunchSelection() {
+  if (pendingLaunch_ || pendingPowerAction_ || powerActionActive_) return;
+  if (IsMenuView()) {
+    if (selectedResult_ >= menuItems_.size()) return;
+    const MenuItemId item = menuItems_[selectedResult_];
+    if (item == MenuItemId::System) {
+      menuPage_ = MenuPage::System;
+      launchError_.clear();
+      UpdateSearchHint();
+      UpdateResults();
+      SetFocus(edit_);
+    } else {
+      pendingPowerAction_ = item;
+      if (PostMessageW(window_, kMessageSystemPowerAction, 0, 0)) return;
+      pendingPowerAction_.reset();
+      launchError_ = L"Could not queue power action: " + WindowsErrorMessage(GetLastError());
+      ResizeAndPosition(false);
+      InvalidateRect(window_, nullptr, FALSE);
+    }
+    return;
+  }
   if (results_.empty() || selectedResult_ >= results_.size()) {
     return;
   }
@@ -754,8 +839,46 @@ void LauncherApp::LaunchSelection() {
     return;
   }
 
+  if (pendingLaunch_) return;
+  pendingLaunch_ = catalog_.applications[applicationIndex];
+  // A sent input message cannot make an outgoing COM activation call. Return
+  // from that message first, then activate the captured entry on the main STA.
+  if (PostMessageW(window_, kMessageLaunchSelection, 0, 0)) return;
+  launchError_ = L"Could not queue launch of " + pendingLaunch_->name + L": " + WindowsErrorMessage(GetLastError());
+  pendingLaunch_.reset();
+  ResizeAndPosition(false);
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+void LauncherApp::ExecutePendingPowerAction() {
+  if (!pendingPowerAction_ || powerActionActive_) return;
+  const MenuItemId action = *pendingPowerAction_;
+  powerActionActive_ = true;
   std::wstring error;
-  if (LaunchApplication(catalog_.applications[applicationIndex], error)) {
+  bool requested = false;
+  // Dismissal, navigation, or destruction before dispatch cancels the request.
+  if (pendingPowerAction_ == action && IsWindow(window_) && IsWindowVisible(window_))
+    requested = requestPowerAction_(action, error);
+  pendingPowerAction_.reset();
+  powerActionActive_ = false;
+  if (!IsWindow(window_)) return;
+  if (requested && error.empty()) {
+    HideLauncher();
+  } else {
+    launchError_ = std::move(error);
+    if (IsWindowVisible(window_)) ResizeAndPosition(false);
+    SetFocus(edit_);
+    InvalidateRect(window_, nullptr, FALSE);
+  }
+}
+
+void LauncherApp::ExecutePendingLaunch() {
+  if (!pendingLaunch_) return;
+  const ApplicationEntry application = std::move(*pendingLaunch_);
+  std::wstring error;
+  const bool launched = LaunchApplication(application, error);
+  pendingLaunch_.reset();
+  if (launched) {
     HideLauncher();
     return;
   }
@@ -767,22 +890,46 @@ void LauncherApp::LaunchSelection() {
 bool LauncherApp::LaunchApplication(const ApplicationEntry& application, std::wstring& error) {
   std::wstring file = application.target;
   std::wstring parameters = JoinArguments(application.arguments);
-  if (StartsWithCaseInsensitive(application.target, L"shell:")) {
-    file = L"explorer.exe";
-    std::wstring shellParameters = QuoteArgument(application.target);
-    if (!parameters.empty()) {
-      shellParameters += L" ";
-      shellParameters += parameters;
+  constexpr std::wstring_view appsPrefix = L"shell:AppsFolder\\";
+  if (StartsWithCaseInsensitive(file, appsPrefix)) {
+    const std::wstring appId = file.substr(appsPrefix.size());
+    // Packaged apps must bypass the Apps-folder verb handler, which can depend
+    // on Explorer's desktop broker even though ShellExecute does not start it.
+    if (VerifyApplicationUserModelId(appId.c_str()) == ERROR_SUCCESS) {
+      ComPtr<IApplicationActivationManager> activation;
+      HRESULT result = CoCreateInstance(CLSID_ApplicationActivationManager, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(activation.ReleaseAndGetAddressOf()));
+      if (SUCCEEDED(result)) {
+        DWORD processId = 0;
+        result = activation->ActivateApplication(appId.c_str(), parameters.empty() ? nullptr : parameters.c_str(),
+                                                 AO_NOERRORUI, &processId);
+      }
+      if (FAILED(result)) {
+        error = L"Could not activate " + application.name + L": " + winrt::hresult_error(result).message().c_str();
+        return false;
+      }
+      return true;
     }
-    parameters = std::move(shellParameters);
+  }
+  PIDLIST_ABSOLUTE item = nullptr;
+  const auto freeItem = [](ITEMIDLIST* value) { CoTaskMemFree(value); };
+  std::unique_ptr<ITEMIDLIST, decltype(freeItem)> itemOwner(nullptr, freeItem);
+  if (StartsWithCaseInsensitive(application.target, L"shell:")) {
+    const HRESULT parsed = SHParseDisplayName(file.c_str(), nullptr, &item, 0, nullptr);
+    itemOwner.reset(reinterpret_cast<ITEMIDLIST*>(item));
+    if (FAILED(parsed)) {
+      error = L"Could not resolve " + application.name + L": " + winrt::hresult_error(parsed).message().c_str();
+      return false;
+    }
   }
 
   SHELLEXECUTEINFOW execute{};
   execute.cbSize = sizeof(execute);
-  execute.fMask = SEE_MASK_FLAG_NO_UI;
+  execute.fMask = SEE_MASK_FLAG_NO_UI | (item ? SEE_MASK_INVOKEIDLIST : 0);
+  execute.lpIDList = item;
   execute.hwnd = window_;
   execute.lpVerb = L"open";
-  execute.lpFile = file.c_str();
+  execute.lpFile = item ? nullptr : file.c_str();
   execute.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
   execute.lpDirectory = application.workingDirectory ? application.workingDirectory->c_str() : nullptr;
   execute.nShow = SW_SHOWNORMAL;
@@ -844,11 +991,13 @@ void LauncherApp::Render() {
 
   const visuals::Palette palette = visuals::GetPalette(lightTheme_);
 
+  ComPtr<ID2D1SolidColorBrush> backgroundBrush;
   ComPtr<ID2D1SolidColorBrush> textBrush;
   ComPtr<ID2D1SolidColorBrush> mutedBrush;
   ComPtr<ID2D1SolidColorBrush> selectedBrush;
   ComPtr<ID2D1SolidColorBrush> separatorBrush;
   ComPtr<ID2D1SolidColorBrush> errorBrush;
+  renderTarget_->CreateSolidColorBrush(palette.background, &backgroundBrush);
   renderTarget_->CreateSolidColorBrush(palette.text, &textBrush);
   renderTarget_->CreateSolidColorBrush(palette.muted, &mutedBrush);
   renderTarget_->CreateSolidColorBrush(palette.selected, &selectedBrush);
@@ -864,7 +1013,60 @@ void LauncherApp::Render() {
                           D2D1::Point2F(visuals::kWindowWidth - 16.0f, visuals::kSearchHeight),
                           separatorBrush.Get(), 1.0f);
 
-  if (results_.empty() && queryHasText_) {
+  if (menuPage_ != MenuPage::Main) {
+    const float center = visuals::kSearchHeight + visuals::kMenuHeaderHeight / 2.0f;
+    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(39.0f, center), textBrush.Get(), 1.75f);
+    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center - 6.0f), textBrush.Get(), 1.75f);
+    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center + 6.0f), textBrush.Get(), 1.75f);
+    constexpr std::wstring_view title = L"System";
+    renderTarget_->DrawTextW(title.data(), static_cast<UINT32>(title.size()), resultTextFormat_.Get(),
+        D2D1::RectF(visuals::kResultTextLeft, visuals::kSearchHeight,
+            visuals::kWindowWidth - visuals::kContentRight, ResultsTop()), mutedBrush.Get());
+  }
+
+  if (IsMenuView()) {
+    for (std::size_t index = 0; index < menuItems_.size(); ++index) {
+      const float top = ResultsTop() + static_cast<float>(index) * visuals::kResultHeight;
+      if (index == selectedResult_) {
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(visuals::kSelectionHorizontalInset, top + visuals::kSelectionVerticalInset,
+                visuals::kWindowWidth - visuals::kSelectionHorizontalInset,
+                top + visuals::kResultHeight - visuals::kSelectionVerticalInset),
+            visuals::kSelectionCornerRadius, visuals::kSelectionCornerRadius), selectedBrush.Get());
+      }
+      const auto item = menuItems_[index];
+      const float center = top + visuals::kResultHeight / 2.0f;
+      if (item == MenuItemId::System) {
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(20.0f, center - 10.0f, 43.0f, center + 5.0f), 2.0f, 2.0f), mutedBrush.Get(), 1.5f);
+        renderTarget_->DrawLine(D2D1::Point2F(31.5f, center + 5.0f), D2D1::Point2F(31.5f, center + 10.0f), mutedBrush.Get(), 1.5f);
+        renderTarget_->DrawLine(D2D1::Point2F(26.0f, center + 10.0f), D2D1::Point2F(37.0f, center + 10.0f), mutedBrush.Get(), 1.5f);
+        const float right = visuals::kWindowWidth - 28.0f;
+        renderTarget_->DrawLine(D2D1::Point2F(right - 5.0f, center - 5.0f), D2D1::Point2F(right, center), mutedBrush.Get(), 1.5f);
+        renderTarget_->DrawLine(D2D1::Point2F(right, center), D2D1::Point2F(right - 5.0f, center + 5.0f), mutedBrush.Get(), 1.5f);
+      } else {
+        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(32.0f, center), 10.0f, 10.0f), mutedBrush.Get(), 1.75f);
+        if (item == MenuItemId::ShutDown) {
+          renderTarget_->FillRectangle(D2D1::RectF(28.0f, center - 13.0f, 36.0f, center - 5.0f),
+              index == selectedResult_ ? selectedBrush.Get() : backgroundBrush.Get());
+          renderTarget_->DrawLine(D2D1::Point2F(32.0f, center - 13.0f), D2D1::Point2F(32.0f, center - 2.0f), textBrush.Get(), 1.75f);
+        } else {
+          renderTarget_->DrawLine(D2D1::Point2F(42.0f, center - 10.0f), D2D1::Point2F(42.0f, center - 1.0f), textBrush.Get(), 1.75f);
+          renderTarget_->DrawLine(D2D1::Point2F(42.0f, center - 1.0f), D2D1::Point2F(34.0f, center - 1.0f), textBrush.Get(), 1.75f);
+        }
+      }
+      const auto label = MenuItemLabel(item);
+      renderTarget_->DrawTextW(label.data(), static_cast<UINT32>(label.size()), resultTextFormat_.Get(),
+          D2D1::RectF(visuals::kResultTextLeft, top, visuals::kWindowWidth - visuals::kContentRight,
+              top + visuals::kResultHeight), textBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    if (menuItems_.empty()) {
+      constexpr std::wstring_view message = L"No matching system actions";
+      renderTarget_->DrawTextW(message.data(), static_cast<UINT32>(message.size()), messageTextFormat_.Get(),
+          D2D1::RectF(visuals::kContentRight, ResultsTop(), visuals::kWindowWidth - visuals::kContentRight,
+              ResultsTop() + visuals::kResultHeight), mutedBrush.Get());
+    }
+  } else if (results_.empty() && queryHasText_) {
     const std::wstring message = !hasValidCatalog_
                                      ? L"App list unavailable — use the tray menu to open it"
                                      : (catalog_.applications.empty() ? L"No applications configured" : L"No matching applications");
@@ -927,7 +1129,7 @@ void LauncherApp::Render() {
 
   const std::wstring& status = !launchError_.empty() ? launchError_ : catalogError_;
   if (!status.empty()) {
-    const float top = visuals::kSearchHeight +
+    const float top = ResultsTop() +
                       static_cast<float>(VisibleResultRows()) * visuals::kResultHeight;
     const D2D1_RECT_F bounds = D2D1::RectF(
         visuals::kContentRight, top, visuals::kWindowWidth - visuals::kContentRight,
@@ -1041,10 +1243,14 @@ LRESULT CALLBACK LauncherApp::EditProcedure(
   if (message == WM_CHAR && (wParam == VK_RETURN || wParam == VK_ESCAPE)) {
     return 0;
   }
+  if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wParam == VK_F10) {
+    app->ShowTrayMenu(true);
+    return 0;
+  }
   if (message == WM_KEYDOWN) {
     switch (wParam) {
       case VK_ESCAPE:
-        app->HideLauncher();
+        if ((lParam & (1L << 30)) == 0) app->GoBack();
         return 0;
       case VK_UP:
         app->MoveSelection(-1);
@@ -1053,7 +1259,7 @@ LRESULT CALLBACK LauncherApp::EditProcedure(
         app->MoveSelection(1);
         return 0;
       case VK_RETURN:
-        app->LaunchSelection();
+        if ((lParam & (1L << 30)) == 0) app->LaunchSelection();
         return 0;
       default:
         break;
@@ -1079,6 +1285,15 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     return 0;
   }
   switch (message) {
+    case kMessageEnterShellMode:
+      EnterShellMode();
+      return 1;
+    case kMessageSystemPowerAction:
+      ExecutePendingPowerAction();
+      return 0;
+    case kMessageLaunchSelection:
+      ExecutePendingLaunch();
+      return 0;
     case WM_CREATE:
       edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                               0, 0, 100, 32, window_, reinterpret_cast<HMENU>(1), instance_, nullptr);
@@ -1142,8 +1357,12 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       return 0;
 
     case WM_LBUTTONDOWN: {
+      const float x = static_cast<float>(GET_X_LPARAM(lParam)) * 96.0f / static_cast<float>(dpi_);
       const float y = static_cast<float>(GET_Y_LPARAM(lParam)) * 96.0f / static_cast<float>(dpi_);
-      if (const auto result = ResultAtY(y)) {
+      if (menuPage_ != MenuPage::Main && x >= 8.0f && x < visuals::kSearchEditLeft &&
+          y >= visuals::kSearchHeight && y < ResultsTop()) {
+        GoBack();
+      } else if (const auto result = ResultAtY(y)) {
         selectedResult_ = *result;
         LaunchSelection();
       }
@@ -1151,7 +1370,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_ACTIVATE:
-      if (LOWORD(wParam) == WA_INACTIVE && IsWindowVisible(window_)) {
+      if (LOWORD(wParam) == WA_INACTIVE && IsWindowVisible(window_) && !powerActionActive_) {
         HideLauncher();
       }
       return 0;
@@ -1219,6 +1438,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       return TRUE;
 
     case WM_DESTROY:
+      pendingLaunch_.reset();
       StopBackgroundTasks();
       if (hookManager_) {
         hookManager_->Stop();

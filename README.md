@@ -14,12 +14,25 @@ Release binaries are unsigned and Windows may show a security warning. Each ZIP 
 
 ## Use
 
-- **Win+Space** shows or hides the search bar. Type an application name, alias, or app identifier; clearing the query collapses the results.
-- **Up/Down** selects, **Enter** launches, and **Escape** hides. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
-- Click a result to launch it. Left-click the tray icon to open the launcher; right-click for configuration, reload, startup, and exit commands.
+- **Win+Space** shows or hides the search bar. Type an application name, alias, or app identifier; clearing the query returns to the main menu with **System** below the search divider.
+- **Up/Down** selects and **Enter** opens the selected app or menu item. **System** contains **Shut down** and **Restart**; selecting either sends the request immediately. **Escape** or the back arrow returns from System, and Escape on the main menu hides it. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
+- Click a result to launch it. Press **F10** in the search field for the menu, or use the tray icon for configuration, reload, startup, and exit commands.
 - Installed applications are discovered automatically and refreshed when Windows reports changes.
 
 While running, Quick Dial replaces Windows' normal **Win+Space** keyboard-layout shortcut. The shortcut is unavailable on the secure desktop and may not intercept input aimed at an elevated application; the tray icon is the fallback.
+
+## Use with a custom shell
+
+Run `ApplicationQuickDial.exe --shell-mode` for tray-free operation. It starts hidden,
+ready for **Win+Space**. **F10** opens the menu while the launcher is visible. Messages
+appear in the launcher; no notification tray is required. Running the executable
+without `--shell-mode` again opens the existing instance.
+The custom shell should own startup and recovery; this mode does not change sign-in settings.
+
+Packaged Apps-folder entries use Windows' application activation API so they can open
+without Explorer's desktop broker. Other entries use Windows Shell launch APIs without
+explicitly starting `explorer.exe`. Files or folders can still invoke their registered
+handler, including File Explorer when that is the requested application.
 
 ## Configure or develop
 

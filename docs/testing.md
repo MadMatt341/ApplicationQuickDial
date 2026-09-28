@@ -31,7 +31,9 @@ With a normal interactive Windows desktop, run the launcher integration checks s
 .\build\Release\quickdial_single_instance_tests.exe
 ```
 
-These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch target applications, or restart Explorer. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window. Automatic discovery checks exercise actual Apps-folder Shell notification delivery, event coalescing, refresh while hidden, retry after failure, cancellation when disabled, and cached reopening without polling. Deterministic completion checks also verify that a newly installed app appears in the current query, disappears after removal, and leaves icon state intact when a scan finds no changes.
+These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch the user's applications, or restart Explorer. Shell-mode checks verify hidden tray-free startup, the actual F10 menu, visible tray-free messages, mode handoff, and absence of a tray icon. Launch checks run only a private test-executable mode, directly and via a uniquely named temporary Start-menu shortcut with an Apps-folder identity, and verify arguments through an output file. The shortcut and output are removed afterward. A nonexistent packaged-app identity also verifies direct activation failure, case-insensitive Apps-folder routing, and the absence of Shell fallback. Repeated synchronously delivered Enter messages verify that activation waits until the input handler returns, preserves the selected entry across catalog changes, and retains launch failure status without queuing duplicates. These checks do not establish compatibility with every packaged app or prove operation after Explorer is stopped; verify the affected packaged app from the real launcher in the custom-shell session. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window. Automatic discovery checks exercise actual Apps-folder Shell notification delivery, event coalescing, refresh while hidden, retry after failure, cancellation when disabled, and cached reopening without polling. Deterministic completion checks also verify that a newly installed app appears in the current query, disappears after removal, and leaves icon state intact when a scan finds no changes.
+
+Run `quickdial_launcher_tests.exe --check-launching` for only the launch fixture and missing-target checks, using a tray-free launcher. This mode can run in a custom-shell session without Explorer: it verifies the temporary shortcut by its `.lnk` path and explicitly skips its new desktop Apps-folder registration, which requires Explorer's app index. It also omits the full suite's tray restoration checks.
 
 Run `quickdial_launcher_tests.exe --check-installation` for the real Start-menu notification check. It creates a uniquely named temporary executable and user Start-menu shortcut while the launcher is hidden, verifies discovery without opening or manually reloading, then removes the shortcut and verifies the result disappears. It sends no synthetic change notification for the shortcut. Both fixture files are cleaned up; the target is never launched.
 
@@ -83,18 +85,32 @@ Run only the sections affected by a change. Before testing, exit any installed o
 7. Add its name or AppUserModelID to `hiddenApplications`, reload, and confirm it is excluded.
 8. On a localized Windows installation, confirm an English component of an AppUserModelID or executable name (for example, `calc`) finds the localized application.
 9. Type and select a result during discovery/reload; completion must preserve both. A failed discovery must retain the last successful installed-app list. These completion paths are covered by `quickdial_launcher_tests.exe` with deterministic results.
-10. Run `quickdial_launcher_tests.exe --check-installation` to verify actual shortcut registration/removal through Windows events while Quick Dial is running, including while hidden. The ordinary checks also verify that `discoverInstalled: false` stops subscriptions and that repeated opening and idle timer messages do not start scans.
+10. Run `quickdial_launcher_tests.exe --check-launching` for only the launch fixture and missing-target checks, using a tray-free launcher. This mode can run in a custom-shell session without Explorer: it verifies the temporary shortcut by its `.lnk` path and explicitly skips its new desktop Apps-folder registration, which requires Explorer's app index. It also omits the full suite's tray restoration checks.
+
+Run `quickdial_launcher_tests.exe --check-installation` to verify actual shortcut registration/removal through Windows events while Quick Dial is running, including while hidden. The ordinary checks also verify that `discoverInstalled: false` stops subscriptions and that repeated opening and idle timer messages do not start scans.
 
 ### Launching and icons
 
 1. Test an executable with arguments that include spaces and quotes.
-2. Test a `shell:AppsFolder` target.
+2. Test both an ordinary desktop shortcut and a packaged-app `shell:AppsFolder` target. For a custom-shell launch fix, verify the affected packaged app from Quick Dial while Explorer is absent, and confirm the app has a usable window.
 3. Test a document or URL handled through a file association.
 4. Test an explicit icon path, shell-derived icon, and invalid icon fallback.
 5. Confirm a failed target leaves the launcher open with an error.
 6. Use a large custom image and confirm the search surface remains responsive while its scaled icon loads. Reopening should reuse cached pixels; explicit reload refreshes them.
 7. Exit during icon loading and discovery. The process must exit promptly even if a Shell operation has stalled; `quickdial_background_tests` covers this using blocked work.
 8. Check a multi-resolution ICO at 100%, 125%, 150%, and 200% scale: it should use a suitable frame and have sharp edges. Check wide and tall custom images for centered, undistorted proportions and transparent edges in both themes. The background suite also checks ICO frame selection and transparent-color filtering.
+
+### Main menu and system actions
+
+Run `quickdial_launcher_tests.exe --check-main-menu` for only the tray-free menu checks, including in a custom-shell session without Explorer. The core suite verifies built-in section entries and scoped action search. The launcher integration suite verifies hidden shell-mode startup, System navigation, Escape/back-arrow behavior, catalog independence, captured/coalesced requests without confirmation, canceled queued requests, fake request failure, and accepted fake dispatch. Pass an optional output directory after `--check-main-menu` to save fixture-window BMP captures in light/dark themes at 96 and 144 DPI; the fixture uses the production common-controls manifest. It substitutes the power-request boundary and does not shut down or restart Windows.
+
+1. Open with Win+Space: System appears below the divider. Down and Enter open it; Up/Down reach Shut down and Restart.
+2. Escape or click the back arrow: return to main without hiding. Escape again hides. Reopening starts on main.
+3. Type an application name on main; app ranking, launch, and scrolling remain available. Clearing restores System. In System, search `shutdown` or `reboot`; an unmatched query has no action.
+4. Verify the action labels and selection behavior without activating a real power action. Activating Shut down or Restart requests that operation immediately.
+5. Check the header, icons, selection, and click targets in both themes and affected DPI settings.
+
+A real Shut down/Restart test ends the desktop session and requires explicit user authorization. Build, core tests, and fake dispatch are not evidence of actual Windows shutdown or restart, saved-work negotiation, or subsequent custom-shell sign-in.
 
 ### Window presentation
 

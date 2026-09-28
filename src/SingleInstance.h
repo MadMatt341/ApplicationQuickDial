@@ -16,7 +16,8 @@ class SingleInstance {
   SingleInstance(const SingleInstance&) = delete;
   SingleInstance& operator=(const SingleInstance&) = delete;
 
-  InstanceStart Start(const wchar_t* windowClass, UINT showMessage, std::wstring& error);
+  InstanceStart Start(const wchar_t* windowClass, UINT showMessage, std::wstring& error,
+                      DWORD_PTR* forwardedReply = nullptr);
 
  private:
   HANDLE mutex_ = nullptr;

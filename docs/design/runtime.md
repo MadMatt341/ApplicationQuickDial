@@ -30,9 +30,22 @@ Application Quick Dial has one resident GUI process with two resident threads, b
 
 When launched with benchmark events, the window also answers the read-only `kMessageBenchmarkState` diagnostic. Its flags distinguish protocol availability, unfinished discovery/icon work or visible painting, and current catalog/background errors. Ordinary launches return zero. The benchmark waits for completion before sampling memory; this diagnostic does not drain work or change scheduling.
 
+## Custom-shell mode
+
+`--shell-mode` starts the launcher hidden without a tray icon or tray-registration retries.
+Win+Space opens it; F10 opens the existing menu while the launcher is visible. Start-with-Windows is omitted in this mode;
+the host shell is responsible for lifecycle. Status messages appear in the launcher.
+Launching the executable without `--shell-mode` again remains a fallback entry point.
+
+A second shell-mode launch forwards `kMessageEnterShellMode` to the existing instance.
+The message returns `1` after switching modes and hiding the launcher. An older instance
+that does not acknowledge it produces an explicit restart/update error. No pointer data
+crosses that message boundary. Explorer replacement and emergency recovery are owned by
+the host shell, not Quick Dial.
+
 ## Tray and sign-in integration
 
-The shell delivers tray events to the main window as `kMessageTray`. The menu can open the launcher, open the catalog with Windows' registered JSON handler, reload it, toggle start-with-Windows, or destroy the window to exit.
+The shell delivers tray events to the main window as `kMessageTray`. The same menu is available through F10 in the search field. It can open the launcher, open the catalog with Windows' registered JSON handler, reload it, toggle start-with-Windows, or destroy the window to exit.
 
 The window registers `TaskbarCreated` and restores its icon after Explorer recreates the notification area. Failed registration retries every two seconds until successful; successful registration stops the retry timer. Repeated broadcasts can also update an icon that still exists.
 
@@ -64,6 +77,6 @@ Use a permanent executable location. A linked Git worktree (a `.git` file) refus
 
 ## Ownership and cleanup
 
-`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, and `HookManager`. Window destruction requests discovery cancellation and stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled icon operation occupies only its bounded worker slot until it returns or the process exits; discovery runs in the separately supervised helper described above.
+`LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, the pending launch entry, and `HookManager`. Internal `kMessageLaunchSelection` carries no payload; the main STA activates the captured entry after the input handler returns. Window destruction requests discovery cancellation and stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled icon operation occupies only its bounded worker slot until it returns or the process exits; discovery runs in the separately supervised helper described above.
 
 `HookManager::Stop` posts `WM_QUIT` to its thread and joins it. Window destruction removes the tray icon, stops timers, and posts the main-thread quit message. Destructors repeat safe cleanup for partial initialization and failure paths.

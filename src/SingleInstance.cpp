@@ -21,10 +21,11 @@ bool ObjectName(HANDLE object, std::wstring& name, std::wstring& error) {
   return true;
 }
 
-InstanceStart Forward(HWND window, UINT message, std::wstring& error) {
+InstanceStart Forward(HWND window, UINT message, std::wstring& error, DWORD_PTR* forwardedReply) {
   DWORD_PTR result = 0;
   SetLastError(ERROR_SUCCESS);
   if (SendMessageTimeoutW(window, message, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result)) {
+    if (forwardedReply) *forwardedReply = result;
     return InstanceStart::Forwarded;
   }
   error = L"The existing Quick Dial window could not be opened (Windows error " +
@@ -39,7 +40,8 @@ SingleInstance::~SingleInstance() {
   if (mutex_) CloseHandle(mutex_);
 }
 
-InstanceStart SingleInstance::Start(const wchar_t* windowClass, UINT showMessage, std::wstring& error) {
+InstanceStart SingleInstance::Start(const wchar_t* windowClass, UINT showMessage, std::wstring& error,
+                                    DWORD_PTR* forwardedReply) {
   error.clear();
   std::wstring station;
   std::wstring desktop;
@@ -65,7 +67,8 @@ InstanceStart SingleInstance::Start(const wchar_t* windowClass, UINT showMessage
   const ULONGLONG deadline = GetTickCount64() + 2000;
   for (;;) {
     // Also recognize an older version using the former session-wide mutex.
-    if (HWND existing = FindWindowW(windowClass, nullptr)) return Forward(existing, showMessage, error);
+    if (HWND existing = FindWindowW(windowClass, nullptr))
+      return Forward(existing, showMessage, error, forwardedReply);
     if (owned_) return InstanceStart::Primary;
 
     const DWORD wait = WaitForSingleObject(mutex_, 25);

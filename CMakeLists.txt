@@ -18,6 +18,7 @@ add_library(quickdial_core STATIC
   src/HotkeyState.cpp
   src/InstalledApps.cpp
   src/Search.cpp
+  src/MainMenu.cpp
 )
 
 target_include_directories(quickdial_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -44,6 +45,7 @@ add_executable(ApplicationQuickDial WIN32
   src/LauncherApp.cpp
   src/LauncherVisualStyle.cpp
   src/StartupManager.cpp
+  src/SystemPower.cpp
   src/SingleInstance.cpp
   src/main.cpp
   resources.rc
@@ -99,8 +101,11 @@ if(BUILD_TESTING)
     src/LauncherApp.cpp
     src/LauncherVisualStyle.cpp
     src/StartupManager.cpp
+    src/SystemPower.cpp
+    resources.rc
   )
   target_compile_options(quickdial_launcher_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_options(quickdial_launcher_tests PRIVATE /MANIFEST:NO)
   target_link_libraries(quickdial_launcher_tests PRIVATE
     quickdial_core quickdial_background quickdial_discovery advapi32 comctl32 d2d1 dwrite dwmapi shcore)
 
