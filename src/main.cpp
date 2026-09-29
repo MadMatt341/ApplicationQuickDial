@@ -50,12 +50,12 @@ BenchmarkEvents OpenBenchmarkEvents() {
   return events;
 }
 
-bool ShellModeRequested() {
+bool HasArgument(std::wstring_view name) {
   int count = 0;
   PWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
   if (!arguments) return false;
   bool requested = false;
-  for (int i = 1; i < count; ++i) requested |= std::wstring_view(arguments[i]) == L"--shell-mode";
+  for (int i = 1; i < count; ++i) requested |= std::wstring_view(arguments[i]) == name;
   LocalFree(arguments);
   return requested;
 }
@@ -63,6 +63,9 @@ bool ShellModeRequested() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  // The shell installer probes this before registration. Keep it free of COM,
+  // singleton forwarding, and UI so an incompatible launcher fails closed.
+  if (HasArgument(L"--blade-contract-v1")) return 73;
   if (const auto helperExit = quickdial::RunDiscoveryHelperIfRequested()) return *helperExit;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   winrt::init_apartment(winrt::apartment_type::single_threaded);
@@ -72,7 +75,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     return 2;
   }
 
-  const bool shellMode = ShellModeRequested();
+  const bool shellMode = HasArgument(L"--shell-mode");
   quickdial::SingleInstance singleInstance;
   std::wstring instanceError;
   DWORD_PTR forwardedReply = 0;

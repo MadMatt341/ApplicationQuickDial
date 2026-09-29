@@ -32,6 +32,13 @@ When launched with benchmark events, the window also answers the read-only `kMes
 
 ## Custom-shell mode
 
+`ApplicationQuickDial.exe --blade-contract-v1` exits immediately with code `73`.
+The Blade installer uses this versioned probe to reject older launchers before
+changing shell registration. It does not create a window, register a hotkey, or
+forward to an existing instance. The probe certifies the launcher contract in
+the selected binary; it does not replace an Explorer-free application launch
+check on the target desktop.
+
 `--shell-mode` starts the launcher hidden without a tray icon or tray-registration retries.
 Win+Space opens it; F10 opens the existing menu while the launcher is visible. Start-with-Windows is omitted in this mode;
 the host shell is responsible for lifecycle. Status messages appear in the launcher.
