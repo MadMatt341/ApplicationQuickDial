@@ -10,6 +10,17 @@ Keyboard hook / tray / edit control -> main-thread window and selection
 Windows change notifications -> bounded discovery refresh -> main-thread completion
 ```
 
+## Blade integration
+
+Quick Dial remains an independent product and repository. It owns app discovery,
+search, launch behavior, and its main menu. Blade owns shell session supervision,
+installation, and recovery; a future Rail widget opens the existing launcher
+through a documented contract. It must not duplicate launcher state or depend on
+source paths in this checkout. The [Blade repository policy](https://github.com/MadMatt341/WindowManager/blob/main/docs/shell-architecture.md#repository-and-integration-policy) owns
+cross-component placement and extraction decisions. The current
+[shell-mode contract](design/runtime.md#custom-shell-mode) remains the implemented
+integration; a repository policy does not introduce a new runtime dependency.
+
 ## Read at the affected boundary
 
 | Work | Detailed contract |

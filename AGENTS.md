@@ -17,6 +17,16 @@ The user owns behavior, interactions, appearance, and feel. The agent owns imple
 
 Do not preload all linked documents. Follow a deeper link when the task crosses that boundary; the source and tests remain the authority for current implementation.
 
+## Blade integration boundaries
+
+For Blade integration or component extraction, follow the
+[shell repository policy](https://github.com/MadMatt341/WindowManager/blob/main/docs/shell-architecture.md#repository-and-integration-policy) and
+[Quick Dial's architecture](docs/architecture.md#blade-integration).
+Keep Quick Dial independently usable and versioned. A Rail launcher widget is
+an adapter to Quick Dial; launcher state and behavior remain here. Separate a
+helper process when its lifetime or failure isolation requires it, without
+creating a repository solely because it is executable.
+
 ## Completion
 
 Run the CTest suite for every code change and the affected checks in [testing.md](docs/testing.md). For documentation-only changes, check links, preserved contracts, and `git diff --check`; no native rebuild is needed.
