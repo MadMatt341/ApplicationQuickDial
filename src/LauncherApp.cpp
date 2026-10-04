@@ -1044,6 +1044,11 @@ void LauncherApp::Render() {
         const float right = visuals::kWindowWidth - 28.0f;
         renderTarget_->DrawLine(D2D1::Point2F(right - 5.0f, center - 5.0f), D2D1::Point2F(right, center), mutedBrush.Get(), 1.5f);
         renderTarget_->DrawLine(D2D1::Point2F(right, center), D2D1::Point2F(right - 5.0f, center + 5.0f), mutedBrush.Get(), 1.5f);
+      } else if (item == MenuItemId::SignOut) {
+        renderTarget_->DrawRectangle(D2D1::RectF(21.0f, center - 10.0f, 33.0f, center + 10.0f), mutedBrush.Get(), 1.5f);
+        renderTarget_->DrawLine(D2D1::Point2F(29.0f, center), D2D1::Point2F(44.0f, center), textBrush.Get(), 1.75f);
+        renderTarget_->DrawLine(D2D1::Point2F(38.0f, center - 5.0f), D2D1::Point2F(44.0f, center), textBrush.Get(), 1.75f);
+        renderTarget_->DrawLine(D2D1::Point2F(44.0f, center), D2D1::Point2F(38.0f, center + 5.0f), textBrush.Get(), 1.75f);
       } else {
         renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(32.0f, center), 10.0f, 10.0f), mutedBrush.Get(), 1.75f);
         if (item == MenuItemId::ShutDown) {

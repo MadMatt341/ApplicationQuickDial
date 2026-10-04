@@ -13,6 +13,7 @@ std::wstring_view MenuItemLabel(MenuItemId item) {
     case MenuItemId::System: return L"System";
     case MenuItemId::ShutDown: return L"Shut down";
     case MenuItemId::Restart: return L"Restart";
+    case MenuItemId::SignOut: return L"Sign out";
   }
   return {};
 }
@@ -20,7 +21,7 @@ std::wstring_view MenuItemLabel(MenuItemId item) {
 std::vector<MenuItemId> MenuItems(MenuPage page, std::wstring_view query) {
   const bool empty = std::all_of(query.begin(), query.end(), [](wchar_t c) { return std::iswspace(c); });
   if (page == MenuPage::Main) return empty ? std::vector{MenuItemId::System} : std::vector<MenuItemId>{};
-  if (empty) return {MenuItemId::ShutDown, MenuItemId::Restart};
+  if (empty) return {MenuItemId::ShutDown, MenuItemId::Restart, MenuItemId::SignOut};
 
   // Reuse the app search contract for names and aliases inside this section.
   static const Catalog commands = [] {
@@ -31,12 +32,15 @@ std::vector<MenuItemId> MenuItems(MenuPage page, std::wstring_view query) {
     ApplicationEntry restart;
     restart.name = MenuItemLabel(MenuItemId::Restart);
     restart.aliases = {L"reboot"};
-    catalog.applications = {shutdown, restart};
+    ApplicationEntry signout;
+    signout.name = MenuItemLabel(MenuItemId::SignOut);
+    signout.aliases = {L"log off", L"logoff", L"logout"};
+    catalog.applications = {shutdown, restart, signout};
     return catalog;
   }();
   std::vector<MenuItemId> items;
   for (const auto index : RankApplications(commands, query))
-    items.push_back(index == 0 ? MenuItemId::ShutDown : MenuItemId::Restart);
+    items.push_back(index == 0 ? MenuItemId::ShutDown : index == 1 ? MenuItemId::Restart : MenuItemId::SignOut);
   return items;
 }
 

@@ -404,12 +404,16 @@ void TestMainMenu() {
   const auto root = quickdial::MenuItems(MenuPage::Main, L"   ");
   Check(root == std::vector{MenuItemId::System}, "empty main menu offers System independently of the app catalog");
   Check(quickdial::MenuItems(MenuPage::Main, L"app").empty(), "typing on the main page keeps application search scoped to apps");
-  Check(quickdial::MenuItems(MenuPage::System, L"") == std::vector{MenuItemId::ShutDown, MenuItemId::Restart},
-        "System lists shut down then restart");
+  Check(quickdial::MenuItems(MenuPage::System, L"") == std::vector{MenuItemId::ShutDown, MenuItemId::Restart, MenuItemId::SignOut},
+        "System lists shut down, restart and sign out");
   Check(quickdial::MenuItems(MenuPage::System, L" SHUTDOWN ") == std::vector{MenuItemId::ShutDown},
         "shutdown alias accepts case folding and surrounding whitespace");
   Check(quickdial::MenuItems(MenuPage::System, L"reboot") == std::vector{MenuItemId::Restart},
         "System search recognizes reboot as restart");
+  Check(quickdial::MenuItems(MenuPage::System, L" LOG OFF ") == std::vector{MenuItemId::SignOut},
+        "System search recognizes log off as sign out");
+  Check(quickdial::MenuItems(MenuPage::System, L"logoff") == std::vector{MenuItemId::SignOut},
+        "System search recognizes the documented logoff alias" );
   Check(quickdial::MenuItems(MenuPage::System, L"calculator").empty(), "unmatched System queries have no selectable action");
 }
 

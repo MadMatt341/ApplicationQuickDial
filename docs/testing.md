@@ -102,15 +102,15 @@ Run `quickdial_launcher_tests.exe --check-installation` to verify actual shortcu
 
 ### Main menu and system actions
 
-Run `quickdial_launcher_tests.exe --check-main-menu` for only the tray-free menu checks, including in a custom-shell session without Explorer. The core suite verifies built-in section entries and scoped action search. The launcher integration suite verifies hidden shell-mode startup, System navigation, Escape/back-arrow behavior, catalog independence, captured/coalesced requests without confirmation, canceled queued requests, fake request failure, and accepted fake dispatch. Pass an optional output directory after `--check-main-menu` to save fixture-window BMP captures in light/dark themes at 96 and 144 DPI; the fixture uses the production common-controls manifest. It substitutes the power-request boundary and does not shut down or restart Windows.
+Run `quickdial_launcher_tests.exe --check-main-menu` for only the tray-free menu checks, including in a custom-shell session without Explorer. The core suite verifies built-in section entries and scoped action search. The launcher integration suite verifies hidden shell-mode startup, System navigation, Escape/back-arrow behavior, catalog independence, captured/coalesced requests without confirmation, canceled queued requests, fake request failure, and accepted fake dispatch. Pass an optional output directory after `--check-main-menu` to save fixture-window BMP captures in light/dark themes at 96 and 144 DPI; the fixture uses the production common-controls manifest. It substitutes the power-request boundary and does not shut down, restart, or sign out of Windows.
 
-1. Open with Win+Space: System appears below the divider. Down and Enter open it; Up/Down reach Shut down and Restart.
+1. Open with Win+Space: System appears below the divider. Down and Enter open it; Up/Down reach Shut down, Restart and Sign out.
 2. Escape or click the back arrow: return to main without hiding. Escape again hides. Reopening starts on main.
-3. Type an application name on main; app ranking, launch, and scrolling remain available. Clearing restores System. In System, search `shutdown` or `reboot`; an unmatched query has no action.
-4. Verify the action labels and selection behavior without activating a real power action. Activating Shut down or Restart requests that operation immediately.
+3. Type an application name on main; app ranking, launch, and scrolling remain available. Clearing restores System. In System, search `shutdown`, `reboot`, or `logoff`; an unmatched query has no action.
+4. Verify the action labels and selection behavior without activating a real power action. Activating Shut down, Restart or Sign out requests that operation immediately.
 5. Check the header, icons, selection, and click targets in both themes and affected DPI settings.
 
-A real Shut down/Restart test ends the desktop session and requires explicit user authorization. Build, core tests, and fake dispatch are not evidence of actual Windows shutdown or restart, saved-work negotiation, or subsequent custom-shell sign-in.
+A real Shut down/Restart/Sign out test ends the desktop session and requires explicit user authorization. Build, core tests, and fake dispatch are not evidence of actual Windows shutdown or restart, saved-work negotiation, or subsequent custom-shell sign-in.
 
 ### Window presentation
 

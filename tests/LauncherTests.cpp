@@ -183,8 +183,8 @@ class LauncherAppTestAccess {
     SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 0);
     SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 1L << 30);
     check(!app.pendingPowerAction_, "holding Enter cannot enter a section and activate its first power action");
-    check(app.menuPage_ == MenuPage::System && app.VisibleResultRows() == 2 &&
-          app.menuItems_ == std::vector{MenuItemId::ShutDown, MenuItemId::Restart},
+    check(app.menuPage_ == MenuPage::System && app.VisibleResultRows() == 3 &&
+          app.menuItems_ == std::vector{MenuItemId::ShutDown, MenuItemId::Restart, MenuItemId::SignOut},
           "Down and Enter open the System submenu");
     check(!app.ResultAtY(visuals::kSearchHeight + 1) && app.ResultAtY(app.ResultsTop() + 1) == 0,
           "submenu header is separate from action hit testing");
@@ -193,7 +193,7 @@ class LauncherAppTestAccess {
     const bool validCatalog = app.hasValidCatalog_;
     app.hasValidCatalog_ = false;
     app.UpdateResults();
-    check(app.menuItems_.size() == 2, "power actions remain available without a valid app catalog");
+    check(app.menuItems_.size() == 3, "power actions remain available without a valid app catalog");
     app.hasValidCatalog_ = validCatalog;
     SetWindowTextW(app.edit_, L"reboot");
     check(app.menuItems_ == std::vector{MenuItemId::Restart}, "System search filters to the reboot action");
@@ -250,6 +250,14 @@ class LauncherAppTestAccess {
     std::wstring invalidActionError;
     check(!RequestSystemPowerAction(MenuItemId::System, invalidActionError) && !invalidActionError.empty(),
           "the power adapter rejects non-power menu items before touching privileges or Windows shutdown");
+    app.requestPowerAction_ = [&](MenuItemId action, std::wstring& error) {
+      captured = action; error = L"Simulated sign out failure"; return false;
+    };
+    app.ShowLauncher(); app.LaunchSelection();
+    SetWindowTextW(app.edit_, L"log off"); app.LaunchSelection();
+    check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }) && captured == MenuItemId::SignOut &&
+          app.launchError_ == L"Simulated sign out failure" && IsWindowVisible(app.window_),
+          "sign out is independently selected and request failures stay visible");
     app.requestPowerAction_ = RequestSystemPowerAction;
     app.ShowLauncher();
     check(app.menuPage_ == MenuPage::Main, "reopening always returns to the main menu");

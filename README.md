@@ -15,7 +15,7 @@ Release binaries are unsigned and Windows may show a security warning. Each ZIP 
 ## Use
 
 - **Win+Space** shows or hides the search bar. Type an application name, alias, or app identifier; clearing the query returns to the main menu with **System** below the search divider.
-- **Up/Down** selects and **Enter** opens the selected app or menu item. **System** contains **Shut down** and **Restart**; selecting either sends the request immediately. **Escape** or the back arrow returns from System, and Escape on the main menu hides it. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
+- **Up/Down** selects and **Enter** opens the selected app or menu item. **System** contains **Shut down**, **Restart**, and **Sign out**; selecting an action sends the request immediately. **Escape** or the back arrow returns from System, and Escape on the main menu hides it. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
 - Click a result to launch it. Press **F10** in the search field for the menu, or use the tray icon for configuration, reload, startup, and exit commands.
 - Installed applications are discovered automatically and refreshed when Windows reports changes.
 

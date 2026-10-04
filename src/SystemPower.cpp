@@ -21,8 +21,14 @@ std::wstring PowerError(std::wstring_view operation, DWORD code) {
 
 bool RequestSystemPowerAction(MenuItemId action, std::wstring& error) {
   error.clear();
-  if (action != MenuItemId::ShutDown && action != MenuItemId::Restart) {
+  if (action != MenuItemId::ShutDown && action != MenuItemId::Restart && action != MenuItemId::SignOut) {
     error = L"Unknown system power action.";
+    return false;
+  }
+  if (action == MenuItemId::SignOut) {
+    // No force flags and no shutdown privilege required for the current session.
+    if (ExitWindowsEx(EWX_LOGOFF, 0)) return true;
+    error = PowerError(L"Windows could not accept sign out", GetLastError());
     return false;
   }
   HANDLE rawToken = nullptr;
