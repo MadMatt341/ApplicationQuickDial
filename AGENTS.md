@@ -27,6 +27,14 @@ an adapter to Quick Dial; launcher state and behavior remain here. Separate a
 helper process when its lifetime or failure isolation requires it, without
 creating a repository solely because it is executable.
 
+## ASD-STE100
+
+Write all new documentation in ASD-STE100 Simplified Technical English, Issue 9.
+Use this standard when you change documentation.
+Obey the writing rules and dictionary requirements in
+[ASD-STE100 Simplified Technical English, Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
+Before you complete a documentation change, examine all new and changed text.
+
 ## Completion
 
 Run the CTest suite for every code change and the affected checks in [testing.md](docs/testing.md). For documentation-only changes, check links, preserved contracts, and `git diff --check`; no native rebuild is needed.
