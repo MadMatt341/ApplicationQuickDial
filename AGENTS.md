@@ -6,16 +6,24 @@ Native C++20 launcher for Windows 11 x64. Keep the Win32 design small; do not ad
 
 The user owns behavior, interactions, appearance, and feel. The agent owns implementation, reliability, performance, and coverage within that behavior. Bring product changes and engineering tradeoffs that affect the experience to the user before implementing them. Routine internal fixes and verification do not require renewed approval.
 
-## Load only what the task needs
+## Read only what the task needs
 
-- Product orientation: [README.md](README.md).
-- Before source edits: [src/AGENTS.md](src/AGENTS.md), then use the [development map](docs/development.md#where-to-make-a-change) to select the affected reference sections.
-- Before test edits: [tests/AGENTS.md](tests/AGENTS.md).
-- Before documentation edits: [docs/AGENTS.md](docs/AGENTS.md), including root documentation.
-- Building or packaging: [build setup](docs/development.md#prerequisites), [release workflow](docs/releases.md).
-- Runtime diagnosis: the relevant section of [troubleshooting](docs/troubleshooting.md).
+Use the task to select the references below.
+For source changes, select the reference section in the [development map](docs/development.md#where-to-make-a-change).
 
-Do not preload all linked documents. Follow a deeper link when the task crosses that boundary; the source and tests remain the authority for current implementation.
+- Product behavior: [README.md](README.md).
+- Source changes: [source instructions](src/AGENTS.md), then the [development map](docs/development.md#where-to-make-a-change).
+- Test changes: [test instructions](tests/AGENTS.md) and the related [test commands](docs/testing.md#targets-and-integration-commands).
+- Documentation changes: [documentation instructions](docs/AGENTS.md), then [reading and writing rules](docs/documentation.md). Use these rules for root documents also.
+- Builds: [prerequisites](docs/development.md#prerequisites) and [build commands](docs/development.md#configure-build-and-test).
+- Packages: [release workflow](docs/releases.md).
+- Runtime failures: [troubleshooting](docs/troubleshooting.md).
+
+Read the selected section and its related source and tests.
+Find the task's state owner, behavior, interfaces, dependencies, failure cases, compatibility rules, and test conditions.
+If these facts are in a different reference, read the related sections there.
+Stop when you have answers to the task questions.
+Keep all necessary text in the selected section.
 
 ## Blade integration boundaries
 

@@ -2,6 +2,8 @@
 
 Applies to `docs/`; root instructions also route root documentation edits here.
 
+For reading and writing rules, use the [documentation policy](documentation.md).
+
 ## Put each fact at its owning level
 
 - Root `README.md`: purpose, install, common interaction, and links. Keep user configuration examples in `catalog.md`.
