@@ -1,7 +1,7 @@
 # Documentation policy
 
 This guide gives reading and writing rules for this repository.
-Policy version: `0.1.0`.
+Policy version: `0.1.1`.
 Read it when you change documents, their structure, or contributor instructions.
 Use the reading rules when source, tests, or documentation are necessary for a task.
 
@@ -92,7 +92,7 @@ Obey Part 1 (writing rules) and Part 2 (dictionary) of the
 [official Issue 9 PDF](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
 
 Use approved dictionary words only with their approved meanings, parts of speech, and forms.
-Use technical nouns and technical verbs only as permitted by the standard.
+Use technical nouns and technical verbs only in the categories given in rules 1.5 and 1.12.
 Use the full writing rules and dictionary to examine the text.
 If you cannot complete these checks, record the cause in the task result.
 
