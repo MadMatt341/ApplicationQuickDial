@@ -1,4 +1,4 @@
-# Application Quick Dial
+# Blade Launcher
 
 Native C++20 launcher for Windows 11 x64. Keep the Win32 design small; do not add a framework, service, installer, or cross-platform layer unless the task requires it.
 
@@ -21,9 +21,9 @@ Do not preload all linked documents. Follow a deeper link when the task crosses 
 
 For Blade integration or component extraction, follow the
 [shell repository policy](https://github.com/MadMatt341/WindowManager/blob/main/docs/shell-architecture.md#repository-and-integration-policy) and
-[Quick Dial's architecture](docs/architecture.md#blade-integration).
-Keep Quick Dial independently usable and versioned. A Rail launcher widget is
-an adapter to Quick Dial; launcher state and behavior remain here. Separate a
+[Launcher's architecture](docs/architecture.md#blade-integration).
+Keep Launcher independently usable and versioned. A Rail launcher widget is
+an adapter to Launcher; launcher state and behavior remain here. Separate a
 helper process when its lifetime or failure isolation requires it, without
 creating a repository solely because it is executable.
 

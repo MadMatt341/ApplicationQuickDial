@@ -6,6 +6,7 @@
 #include <objbase.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -67,7 +68,7 @@ std::filesystem::path ExecutablePath() {
   return {};
 }
 
-int RunHelper(HANDLE mapping) {
+int RunHelper(HANDLE mapping, std::optional<ApplicationSource> source) {
   // A crashed provider must not leave an invisible helper waiting on a dialog.
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   UniqueHandle inheritedMapping(mapping);
@@ -76,7 +77,7 @@ int RunHelper(HANDLE mapping) {
   const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   InstalledAppsResult result;
   try {
-    result = SUCCEEDED(apartment) ? DiscoverInstalledApplications() :
+    result = SUCCEEDED(apartment) ? (source ? DiscoverApplicationSource(*source) : DiscoverInstalledApplications()) :
         Failure(L"Could not initialize Windows app discovery", static_cast<DWORD>(apartment));
   } catch (...) {
     result.error = L"Windows app discovery failed. Try Reload app list.";
@@ -88,8 +89,9 @@ int RunHelper(HANDLE mapping) {
 
 }  // namespace
 
-InstalledAppsResult DiscoverInstalledApplicationsIsolated(
-    std::stop_token cancellation, const std::filesystem::path& executable, std::chrono::milliseconds timeout) {
+static InstalledAppsResult RunIsolatedHelper(
+    std::stop_token cancellation, const std::filesystem::path& executable, std::chrono::milliseconds timeout,
+    std::optional<ApplicationSource> source = {}) {
   if (cancellation.stop_requested()) return {{}, L"Windows app discovery was cancelled."};
   const auto path = executable.empty() ? ExecutablePath() : executable;
   if (path.empty()) return Failure(L"Could not locate the app discovery helper");
@@ -124,6 +126,7 @@ InstalledAppsResult DiscoverInstalledApplicationsIsolated(
   startup.lpAttributeList = attributes.list;
   std::wstring command = L"\"" + path.wstring() + L"\" " + kHelperArgument + L" " +
       std::to_wstring(reinterpret_cast<std::uintptr_t>(mapping.get()));
+  if (source) command += L" --source " + std::to_wstring(static_cast<unsigned>(*source));
   PROCESS_INFORMATION processInfo{};
   // Assignment to the kill-on-close job is atomic with process creation: even
   // parent termination during startup cannot orphan a suspended child.
@@ -154,13 +157,48 @@ InstalledAppsResult DiscoverInstalledApplicationsIsolated(
   return ReadDiscoveryResult({static_cast<const std::byte*>(view.get()), kDiscoveryBufferBytes});
 }
 
+InstalledAppsResult DiscoverInstalledApplicationsIsolated(
+    std::stop_token cancellation, const std::filesystem::path& executable, std::chrono::milliseconds timeout) {
+  // Explicit executable overrides exercise one whole-scan process fixture.
+  if (!executable.empty()) return RunIsolatedHelper(cancellation, executable, timeout);
+  if (timeout.count() < 3 || timeout.count() >= INFINITE) return Failure(L"Invalid app discovery timeout", ERROR_INVALID_PARAMETER);
+  const auto path = ExecutablePath();
+  if (path.empty()) return Failure(L"Could not locate the app discovery helper");
+  InstalledAppsResult combined;
+  const auto sourceTimeout = timeout / 3;
+  for (const auto source : {ApplicationSource::UserStartMenu, ApplicationSource::CommonStartMenu, ApplicationSource::AppsFolder}) {
+    if (cancellation.stop_requested()) return {{}, L"Windows app discovery was cancelled."};
+    auto result = RunIsolatedHelper(cancellation, path, sourceTimeout, source);
+    if (result.sources.size() != 1 || result.sources.front().source != source)
+      result = {{}, result ? L"The discovery helper returned an unexpected source." : result.error};
+    combined.sources.push_back(result.sources.empty() ? DiscoverySourceStatus{source, false, 0, result.error} : result.sources.front());
+    if (result) combined.applications.insert(combined.applications.end(),
+        std::make_move_iterator(result.applications.begin()), std::make_move_iterator(result.applications.end()));
+  }
+  std::sort(combined.sources.begin(), combined.sources.end(), [](const auto& a, const auto& b) { return a.source < b.source; });
+  if (std::none_of(combined.sources.begin(), combined.sources.end(), [](const auto& source) { return source.succeeded; }))
+    combined.error = L"No application source could be read. Reload the app list or open Diagnostics.";
+  std::stable_sort(combined.applications.begin(), combined.applications.end(), [](const auto& a, const auto& b) {
+    const auto name = CompareStringOrdinal(a.name.c_str(), static_cast<int>(a.name.size()), b.name.c_str(), static_cast<int>(b.name.size()), TRUE);
+    return name == CSTR_LESS_THAN || (name == CSTR_EQUAL && CompareStringOrdinal(a.target.c_str(), static_cast<int>(a.target.size()),
+        b.target.c_str(), static_cast<int>(b.target.size()), TRUE) == CSTR_LESS_THAN);
+  });
+  return combined;
+}
+
 std::optional<int> RunDiscoveryHelperIfRequested() {
   int count = 0;
   auto* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
   if (!arguments) return 2;
   const std::unique_ptr<void, decltype(&LocalFree)> guard(arguments, LocalFree);
   if (count < 2 || std::wstring_view(arguments[1]) != kHelperArgument) return std::nullopt;
-  if (count != 3 || !*arguments[2]) return 2;
+  if ((count != 3 && count != 5) || !*arguments[2]) return 2;
+  std::optional<ApplicationSource> source;
+  if (count == 5) {
+    if (std::wstring_view(arguments[3]) != L"--source" || std::wstring_view(arguments[4]).size() != 1 ||
+        *arguments[4] < L'1' || *arguments[4] > L'3') return 2;
+    source = static_cast<ApplicationSource>(*arguments[4] - L'0');
+  }
   for (const wchar_t* digit = arguments[2]; *digit; ++digit) {
     if (*digit < L'0' || *digit > L'9') return 2;
   }
@@ -169,7 +207,7 @@ std::optional<int> RunDiscoveryHelperIfRequested() {
   const auto value = std::wcstoull(arguments[2], &end, 10);
   if (errno == ERANGE || *end || value == 0 || value >= std::numeric_limits<std::uintptr_t>::max()) return 2;
   try {
-    return RunHelper(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value)));
+    return RunHelper(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value)), source);
   } catch (...) {
     return 3;
   }

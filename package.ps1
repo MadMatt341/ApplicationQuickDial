@@ -16,7 +16,7 @@ $stage = Join-Path $output ([Guid]::NewGuid().ToString())
 $folder = Join-Path $stage $name
 New-Item -ItemType Directory -Force $folder | Out-Null
 Copy-Item -LiteralPath (Join-Path $build 'Release/ApplicationQuickDial.exe') -Destination $folder
-foreach ($file in @('README.md', 'LICENSE')) {
+foreach ($file in @('README.md', 'LICENSE', 'Register-LauncherApp.ps1', 'Migrate-LauncherStartup.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $folder
 }
 Compress-Archive -LiteralPath $folder -DestinationPath $zip

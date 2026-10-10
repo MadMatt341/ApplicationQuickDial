@@ -5,6 +5,8 @@
 #include <array>
 #include <string>
 #include <span>
+#include <vector>
+#include <filesystem>
 
 namespace quickdial {
 
@@ -15,7 +17,9 @@ class InstalledAppsWatcher {
   ~InstalledAppsWatcher();
   InstalledAppsWatcher(const InstalledAppsWatcher&) = delete;
   InstalledAppsWatcher& operator=(const InstalledAppsWatcher&) = delete;
-  bool Start(HWND window, UINT message, std::wstring& error);
+  // Optional paths let native fixtures own both watched trees.
+  bool Start(HWND window, UINT message, std::wstring& error,
+             std::span<const std::filesystem::path> directoryPaths = {});
   bool Stop();
   bool IsRunning() const noexcept { return running_; }
   std::span<const HANDLE> DirectoryHandles() const noexcept;
@@ -24,8 +28,9 @@ class InstalledAppsWatcher {
 
  private:
   std::array<ULONG, 2> registrations_{};
-  std::array<HANDLE, 2> directories_{};
+  std::vector<HANDLE> directories_;
   bool running_ = false;
+  std::wstring error_;
 };
 
 }  // namespace quickdial

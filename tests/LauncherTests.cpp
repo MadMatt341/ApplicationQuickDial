@@ -8,6 +8,10 @@
 #include "AppMessages.h"
 #include "DiscoveryProcess.h"
 #include "InstalledAppsWatcher.h"
+#include "LauncherDiagnostics.h"
+#include "blade_appearance.h"
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.Collections.h>
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -94,7 +98,7 @@ class LauncherAppTestAccess {
     link.Reset();
     const auto settled = [&app] {
       return !app.discoveryPending_ && !app.discoveryChangePending_ && !app.discoveryAgain_ &&
-          app.installedApplicationsError_.empty();
+          !app.discoveryRetryPending_ && app.installedApplicationsError_.empty();
     };
     if (!PumpUntil(app, [&] { return settled() && !app.results_.empty(); })) return false;
     if (IsWindowVisible(app.window_)) return false;
@@ -121,7 +125,7 @@ class LauncherAppTestAccess {
     check(app.results_.size() == 2, "typing shows matching applications");
     RECT populatedBounds{};
     GetClientRect(app.window_, &populatedBounds);
-    check(populatedBounds.bottom > emptyBounds.bottom, "typing expands from the main-menu height");
+    check(populatedBounds.bottom == emptyBounds.bottom, "two matches retain the two-row main-menu height");
     SetWindowTextW(app.edit_, L"   ");
     RECT clearedBounds{};
     GetClientRect(app.window_, &clearedBounds);
@@ -164,7 +168,7 @@ class LauncherAppTestAccess {
           "mouse wheel scrolls according to Windows preferences");
     app.catalog_ = originalCatalog;
     SetWindowTextW(app.edit_, L"");
-    check(app.results_.empty() && app.firstVisibleResult_ == 0 && app.VisibleResultRows() == 1,
+    check(app.results_.empty() && app.firstVisibleResult_ == 0 && app.VisibleResultRows() == 2,
           "clearing a scrolled search restores the System row");
     SetWindowTextW(app.edit_, L"Test");
 
@@ -177,8 +181,9 @@ class LauncherAppTestAccess {
       if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
     };
     app.ShowLauncher();
-    check(app.VisibleResultRows() == 1 && app.menuItems_ == std::vector{MenuItemId::System},
+    check(app.VisibleResultRows() == 2 && app.menuItems_ == std::vector{MenuItemId::System,MenuItemId::Appearance},
           "empty search displays the System row below the divider");
+    SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);
     SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);
     SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 0);
     SendMessageW(app.edit_, WM_KEYDOWN, VK_RETURN, 1L << 30);
@@ -258,9 +263,36 @@ class LauncherAppTestAccess {
     check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }) && captured == MenuItemId::SignOut &&
           app.launchError_ == L"Simulated sign out failure" && IsWindowVisible(app.window_),
           "sign out is independently selected and request failures stay visible");
+    app.ShowLauncher();
+    SetWindowTextW(app.edit_, L"restart");
+    check(app.searchResults_.size() == 1 && app.searchResults_[0].kind == LauncherResult::Kind::Command &&
+        app.searchResults_[0].command == MenuItemId::Restart, "root search returns a typed Restart result");
+    app.LaunchSelection();
+    check(PumpUntil(app, [&] { return !app.pendingPowerAction_; }) && captured == MenuItemId::Restart,
+        "root result dispatches the captured action through the fake power boundary");
     app.requestPowerAction_ = RequestSystemPowerAction;
     app.ShowLauncher();
     check(app.menuPage_ == MenuPage::Main, "reopening always returns to the main menu");
+    const auto configured = app.configuredCatalog_;
+    ApplicationEntry first;
+    first.name = L"Selection first"; first.target = L"first.exe"; first.identity = L"selection-first";
+    ApplicationEntry last;
+    last.name = L"Selection last"; last.target = L"last.exe"; last.identity = L"selection-last";
+    app.configuredCatalog_.applications = {first, last};
+    app.configuredCatalog_.discoverInstalled = false;
+    app.RebuildCatalog();
+    SetWindowTextW(app.edit_, L"Selection");
+    app.MoveSelection(1);
+    app.configuredCatalog_.applications[1].target = L"replacement.exe";
+    app.RebuildCatalog();
+    check(app.selectedResult_ == 1 && app.searchResults_[1].kind == LauncherResult::Kind::Application,
+        "stable application identity preserves selection when its launch target changes");
+    SetWindowTextW(app.edit_, L"reboot");
+    app.RebuildCatalog();
+    check(app.searchResults_.size() == 1 && app.searchResults_[app.selectedResult_].command == MenuItemId::Restart,
+        "catalog refresh preserves the selected typed root command");
+    app.configuredCatalog_ = configured;
+    app.ShowLauncher();
     return failures;
   }
 
@@ -288,7 +320,19 @@ class LauncherAppTestAccess {
     HDC destination = source ? CreateCompatibleDC(source) : nullptr;
     HBITMAP bitmap = source ? CreateCompatibleBitmap(source, width, pixelsHigh) : nullptr;
     HGDIOBJ previous = bitmap && destination ? SelectObject(destination, bitmap) : nullptr;
-    bool success = previous && BitBlt(destination, 0, 0, width, pixelsHigh, source, 0, 0, SRCCOPY);
+    // Inactive desktop screen copies omit Direct2D presentation. Render the
+    // production drawing path to an owned software DC, then print the real edit.
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> target;
+    const auto properties=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE),static_cast<float>(dpi),static_cast<float>(dpi));
+    bool success=previous && SUCCEEDED(app.d2dFactory_->CreateDCRenderTarget(&properties,&target)) && SUCCEEDED(target->BindDC(destination,&bounds));
+    if(success) {
+      target->BeginDraw();app.DrawContent(target.Get(),false);success=SUCCEEDED(target->EndDraw());
+      RECT editBounds{};GetWindowRect(app.edit_,&editBounds);MapWindowPoints(nullptr,app.window_,reinterpret_cast<POINT*>(&editBounds),2);
+      const int saved=SaveDC(destination);SetViewportOrgEx(destination,editBounds.left,editBounds.top,nullptr);
+      SendMessageW(app.edit_,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(destination),PRF_CLIENT|PRF_ERASEBKGND);RestoreDC(destination,saved);
+    }
+    target.Reset();
     if (previous) SelectObject(destination, previous);
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -314,6 +358,38 @@ class LauncherAppTestAccess {
     return static_cast<bool>(output);
   }
 
+  static int CheckAppearance(LauncherApp& app, const std::filesystem::path& snapshots) {
+    wchar_t source[32768]{};
+    if (!GetEnvironmentVariableW(L"BLADE_APPEARANCE_FILE", source, 32768) ||
+        std::filesystem::path(source) != snapshots / L"appearance.json") {
+      std::cerr << "FAILED: isolated appearance fixture prerequisite\n"; return 1;
+    }
+    int failures=0;
+    const auto check=[&](bool ok,const char* detail){if(!ok){++failures;std::cerr<<"FAILED: "<<detail<<'\n';}};
+    const auto write=[&](const std::string& value){
+      const std::wstring temporary=std::wstring(source)+L".new";
+      {std::ofstream file(temporary,std::ios::binary);file<<value;}
+      check(MoveFileExW(temporary.c_str(),source,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0,"atomic appearance replacement");
+    };
+    const auto status=[](){std::string result(blade_appearance_json(nullptr,0),'\0');blade_appearance_json(result.data(),result.size());result.pop_back();return result;};
+    app.ShowLauncher();SetWindowTextW(app.edit_,L"Test");app.MoveSelection(1);
+    const auto window=app.window_;const auto edit=app.edit_;const auto selected=app.selectedResult_;
+    write(R"({"format":"blade-appearance","schemaVersion":1,"theme":"blade-charcoal","themeVersion":1,"overrides":{"tokens":{"colors":{"background":"#102030"},"typography":{"body":18,"search":22,"families":["Blade Fixture Missing Font","Consolas"]}},"components":{"launcher":{"width":640}}}})");
+    check(PumpUntil(app,[&]{return visuals::kWindowWidth==640 && visuals::kSearchFontSize==22;}),"appearance file notification updates launcher metrics");
+    wchar_t query[64]{};GetWindowTextW(app.edit_,query,64);
+    check(window==app.window_&&edit==app.edit_&&app.selectedResult_==selected&&std::wstring(query)==L"Test","theme reload preserves HWND, query and selection");
+    LOGFONTW font{};GetObjectW(app.editFont_,sizeof(font),&font);
+    check(std::wstring(font.lfFaceName)==L"Consolas","native search font uses installed fallback");
+    check(visuals::GetPalette(false).editBackground==RGB(16,32,48)&&visuals::GetPalette(true).editBackground==RGB(16,32,48),"fixed dark selection ignores independent Windows palette preference");
+    std::ofstream(snapshots/L"appearance-status.json",std::ios::binary)<<status();
+    write("{invalid");
+    check(PumpUntil(app,[&]{return status().find("\"rejection\":null")==std::string::npos;}),"malformed live edit reports rejection");
+    check(visuals::kWindowWidth==640&&visuals::kSearchFontSize==22,"malformed live edit retains last valid layout");
+    write(R"({"format":"blade-appearance","schemaVersion":1,"theme":"blade-charcoal","themeVersion":1,"overrides":{}})");
+    check(PumpUntil(app,[&]{return visuals::kWindowWidth==620&&visuals::kSearchFontSize==18;}),"valid replacement recovers default theme");
+    app.ShowLauncher();return failures;
+  }
+
   static int RunMainMenuChecks(const std::filesystem::path& path, const std::filesystem::path& snapshots) {
     LauncherApp app(nullptr, path, true);
     if (!app.Initialize(GetModuleHandleW(nullptr))) {
@@ -327,10 +403,45 @@ class LauncherAppTestAccess {
     }
     failures += CheckSearch(app);
     failures += CheckMainMenu(app);
+    if(!snapshots.empty()) failures += CheckAppearance(app,snapshots);
+    const auto reportPath = path.parent_path() / L"live-status.json";
+    // The real native client runs in a separate owned process. Target the fixture
+    // explicitly so an ordinary-desktop run cannot inspect or open the resident.
+    wchar_t executable[32768]{};
+    GetModuleFileNameW(nullptr, executable, 32768);
+    std::wstring command = L"\"" + std::wstring(executable) + L"\" --diagnostic-fixture " +
+        std::to_wstring(reinterpret_cast<UINT_PTR>(app.window_)) + L" \"" + reportPath.wstring() + L"\"";
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION client{};
+    int statusExit = 1;
+    if (CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                       nullptr, nullptr, &startup, &client)) {
+      CloseHandle(client.hThread);
+      if (PumpUntil(app, [&] { return WaitForSingleObject(client.hProcess, 0) == WAIT_OBJECT_0; })) {
+        DWORD exitCode = 1;
+        GetExitCodeProcess(client.hProcess, &exitCode);
+        statusExit = static_cast<int>(exitCode);
+      } else {
+        TerminateProcess(client.hProcess, 1);
+        WaitForSingleObject(client.hProcess, 5000);
+      }
+      CloseHandle(client.hProcess);
+    }
+    std::ifstream statusFile(reportPath, std::ios::binary);
+    const std::string statusText{std::istreambuf_iterator<char>(statusFile), {}};
+    statusFile.close();
+    winrt::Windows::Data::Json::JsonObject status;
+    const bool parsed = winrt::Windows::Data::Json::JsonObject::TryParse(winrt::to_hstring(statusText), status);
+    if (statusExit != 0 || !parsed || status.GetNamedString(L"product", L"") != L"Blade Launcher" ||
+        status.GetNamedArray(L"results").Size() != 1 ||
+        status.GetNamedArray(L"results").GetObjectAt(0).GetNamedString(L"label") != L"Restart") {
+      ++failures; std::cerr << "FAILED: live diagnostic protocol returns the actual typed search result\n";
+    }
+    std::filesystem::remove(reportPath);
     if (!snapshots.empty()) {
       std::filesystem::create_directories(snapshots);
       for (const bool light : {false, true}) {
-        for (const UINT dpi : {96U, 144U}) {
+        for (const UINT dpi : {96U, 120U, 144U, 192U}) {
           app.ShowLauncher();
           const auto suffix = std::wstring(light ? L"light-" : L"dark-") + std::to_wstring(dpi) + L".bmp";
           if (!CaptureMenu(app, snapshots / (L"main-" + suffix), light, dpi)) ++failures;
@@ -492,6 +603,45 @@ class LauncherAppTestAccess {
     return failures;
   }
 
+  static int RunDiscoveryChecks(const std::filesystem::path& path) {
+    int failures = 0;
+    const auto check = [&failures](bool condition, const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    std::ofstream(path, std::ios::trunc) << R"({"version":1,"applications":[{"name":"Manual fixture","target":"manual.exe"}]})";
+    LauncherApp app(nullptr, path, true);
+    if (!app.Initialize(GetModuleHandleW(nullptr))) { std::cerr << "FAILED: discovery fixture initialization\n"; return 1; }
+    check(Drain(app) && app.installedApplicationsError_.empty(), "real initial discovery completes without Explorer");
+    app.ShowLauncher();
+    check(!app.discoveryPending_, "fresh healthy reopening reuses the source cache");
+    ApplicationEntry installed;
+    installed.name = L"Cached fixture"; installed.target = L"cached.exe"; installed.source = ApplicationSource::AppsFolder;
+    app.ApplyInstalledApplications({{installed}, {}, {{ApplicationSource::AppsFolder, true, 0, {}},
+        {ApplicationSource::UserStartMenu, true, 0, {}}, {ApplicationSource::CommonStartMenu, true, 0, {}}}});
+    SetWindowTextW(app.edit_, L"Cached fixture");
+    app.ApplyInstalledApplications({{}, L"Fixture total provider failure"});
+    check(app.catalog_.applications.size() == 2 && app.results_.size() == 1 && !app.catalogError_.empty(),
+        "tray-free failure preserves cache, query and visible error without triggering notification recursion");
+    std::ofstream(path, std::ios::trunc) << "invalid JSON";
+    app.ReloadCatalog();
+    const auto parseError = app.catalogError_;
+    auto replacement = installed; replacement.name = L"Replacement";
+    app.ApplyInstalledApplications({{replacement}, {}});
+    check(app.catalog_.applications.back().name == L"Cached fixture" && app.catalogError_ == parseError,
+        "late completion cannot replace a visible catalog after invalid JSON reload");
+    std::ofstream(path, std::ios::trunc) << R"({"version":1,"applications":[{"name":"Manual fixture","target":"manual.exe"}]})";
+    app.ShowLauncher();
+    app.ApplyInstalledApplications({{}, L"Fixture failure before open"});
+    app.ShowLauncher();
+    check(app.discoveryPending_, "opening after failure starts a bounded catch-up request");
+    check(Drain(app) && app.installedApplicationsError_.empty(), "catch-up recovers through the real helper");
+    app.HideLauncher();
+    check(CheckInstallationNotifications(app, path.parent_path()), "physical shortcut creation and removal trigger discovery while hidden");
+    DestroyWindow(app.window_);
+    if (!failures) std::cout << "Launcher discovery integration checks passed\n";
+    return failures ? 1 : 0;
+  }
+
   static int Run(const std::filesystem::path& path, const std::filesystem::path& iconPath,
                  bool checkInstallation) {
     int failures = 0;
@@ -603,8 +753,8 @@ class LauncherAppTestAccess {
     app.HandleMessage(WM_ACTIVATE, WA_INACTIVE, 0);
     check(!IsWindowVisible(app.window_), "losing activation hides the launcher");
 
-    // Opening and idle timer messages must never poll. Only an app-change
-    // event should queue the bounded discovery helper, even while hidden.
+    // Fresh healthy opens reuse the cache. Failed or stale opens catch up once.
+    // Idle timer messages still never poll.
     std::ofstream(path, std::ios::trunc)
         << R"({"version":1,"applications":[{"name":"Test Alpha","target":"alpha.exe"}]})";
     app.discoveryRequested_ = true;
@@ -630,7 +780,7 @@ class LauncherAppTestAccess {
 
     app.ApplyInstalledApplications({{}, L"Simulated automatic discovery failure"});
     app.ShowLauncher();
-    check(!app.discoveryPending_, "opening after a failed scan does not resume polling");
+    check(app.discoveryPending_, "opening after a failed scan requests bounded catch-up discovery");
     app.ScheduleInstalledApplicationsRefresh();
     app.HandleMessage(WM_TIMER, 3, 0);
     check(Drain(app) && app.installedApplicationsError_.empty(), "a later automatic scan recovers from failure");
@@ -736,6 +886,7 @@ class LauncherAppTestAccess {
     check(menuSeen, "F10 opens the real launcher menu without a tray");
     failures += CheckApplicationLaunches(app, path.parent_path());
     failures += CheckMainMenu(app);
+
     DestroyWindow(app.window_);
     check(!app.iconTasks_->HasPending() && !app.discoveryTasks_->HasPending(),
           "window destruction cancels its background queues");
@@ -749,6 +900,27 @@ class LauncherAppTestAccess {
 }  // namespace quickdial
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string_view(argv[1]) == "--private-desktop") {
+    const std::wstring desktopName = L"BladeLauncherFixture-" + std::to_wstring(GetCurrentProcessId());
+    HDESK desktop = CreateDesktopW(desktopName.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    if (!desktop) { std::cerr << "FAILED: private desktop prerequisite " << GetLastError() << '\n'; return 1; }
+    wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
+    std::wstring command = L"\"" + std::wstring(executable) + L"\"";
+    for (int index = 2; index < argc; ++index) command += L" \"" + std::wstring(winrt::to_hstring(argv[index])) + L"\"";
+    STARTUPINFOW startup{sizeof(startup)};
+    startup.lpDesktop = const_cast<wchar_t*>(desktopName.c_str());
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &child)) {
+      std::cerr << "FAILED: fixture process creation " << GetLastError() << '\n'; CloseDesktop(desktop); return 1;
+    }
+    CloseHandle(child.hThread);
+    const auto wait = WaitForSingleObject(child.hProcess, 90000);
+    DWORD result = 1;
+    if (wait == WAIT_OBJECT_0) GetExitCodeProcess(child.hProcess, &result);
+    else { TerminateProcess(child.hProcess, 1); WaitForSingleObject(child.hProcess, 5000); std::cerr << "FAILED: private fixture timed out\n"; }
+    CloseHandle(child.hProcess); CloseDesktop(desktop);
+    return static_cast<int>(result);
+  }
   if (argc >= 2 && std::string_view(argv[1]) == "--launched-fixture") {
     int count = 0;
     PWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
@@ -760,6 +932,11 @@ int main(int argc, char** argv) {
   }
   if (const auto helperResult = quickdial::RunDiscoveryHelperIfRequested()) return *helperResult;
   winrt::init_apartment(winrt::apartment_type::single_threaded);
+  if (argc == 4 && std::string_view(argv[1]) == "--diagnostic-fixture") {
+    const auto target = reinterpret_cast<HWND>(std::stoull(argv[2]));
+    return quickdial::RunLauncherDiagnostic(quickdial::kSearchRequest, L"restart",
+        std::filesystem::path(winrt::to_hstring(argv[3]).c_str()), target);
+  }
   const auto directory = std::filesystem::temp_directory_path() /
       (L"QuickDialLauncherTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   std::filesystem::create_directories(directory);
@@ -789,7 +966,7 @@ int main(int argc, char** argv) {
   const bool checkInstallation = argc == 2 && std::string_view(argv[1]) == "--check-installation";
   const bool checkLaunching = argc == 2 && std::string_view(argv[1]) == "--check-launching";
   const bool checkMainMenu = argc >= 2 && std::string_view(argv[1]) == "--check-main-menu";
-  const int result = checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
+  const int result = checkInstallation ? quickdial::LauncherAppTestAccess::RunDiscoveryChecks(path) : checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
                                    : quickdial::LauncherAppTestAccess::Run(path, iconPath, checkInstallation);
   std::filesystem::remove(path);
   std::filesystem::remove(iconPath);

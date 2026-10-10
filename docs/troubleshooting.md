@@ -22,7 +22,11 @@ If **Win+Space** does nothing, try the tray icon. Hook installation failure is r
 ## Catalog, discovery, or icons
 
 - Catalog edits reload on open or **Reload app list**. A parse error retains the previous valid catalog; inspect the error before assuming the edit was ignored.
-- New apps appear after Windows registration and a completed background refresh. A failed scan retains the previous list; explicit reload retries. See [discovery behavior](design/catalog-discovery.md).
+- Use **F10 → Diagnostics** or the [diagnostic CLI](design/runtime.md#diagnostic-boundary). Confirm the actual running executable/version and account/catalog path first. A new build forwarded to an old singleton does not update the running binary.
+- For a missing app, inspect matching `entries`: a hidden rule, maintenance classification, duplicate command, or disabled discovery is different from absence. Inspect each provider’s health/skipped count. Physical Start-menu shortcuts are read even without an Apps-folder index entry. Reload retries degraded sources; healthy providers continue updating.
+- Apps installed without a Windows app identity or Start-menu shortcut, including portable/development executables, need [verified registration](registration.md). Search aliases only help after the entry exists.
+- A nominal `%LOCALAPPDATA%` path, elevation, or same-looking tool-local JSON file does not establish ordinary account storage. Packaged development tools can redirect writes. Use the registration script’s independent native verification and compare hashes rather than rewriting the whole catalog.
+- If ordinary account registration is correct but search is wrong, compare the running instance’s diagnostic catalog path, discovery/cache state and exclusion reason before changing settings. Never delete settings or blindly rescan every executable as a recovery step.
 - For a missing custom icon, verify its expanded path and the [supported limits](catalog.md). Unsupported images fall back to the Shell icon or placeholder.
 
 ## Build environment

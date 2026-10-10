@@ -1,7 +1,10 @@
+#include "blade_appearance.h"
 #include "AppMessages.h"
 #include "LauncherApp.h"
 #include "DiscoveryProcess.h"
 #include "SingleInstance.h"
+#include "CatalogRegistration.h"
+#include "LauncherDiagnostics.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -60,6 +63,17 @@ bool HasArgument(std::wstring_view name) {
   return requested;
 }
 
+std::wstring ArgumentAfter(std::wstring_view name) {
+  int count = 0;
+  auto arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+  std::wstring value;
+  if (!arguments) return value;
+  for (int index = 1; index + 1 < count; ++index)
+    if (std::wstring_view(arguments[index]) == name) { value = arguments[index + 1]; break; }
+  LocalFree(arguments);
+  return value;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
@@ -69,6 +83,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   if (const auto helperExit = quickdial::RunDiscoveryHelperIfRequested()) return *helperExit;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   winrt::init_apartment(winrt::apartment_type::single_threaded);
+  for (const auto mode : {L"--register-app", L"--catalog-status"}) {
+    if (HasArgument(mode)) {
+      const auto output = ArgumentAfter(L"--output");
+      if (output.empty()) return 2;
+      return quickdial::RunCatalogCommand(mode, ArgumentAfter(mode), output, ArgumentAfter(L"--account"));
+    }
+  }
+  if (HasArgument(L"--status") || HasArgument(L"--lookup") || HasArgument(L"--search")) {
+    const auto output = ArgumentAfter(L"--output");
+    if (output.empty()) return 2;
+    const auto mode = HasArgument(L"--search") ? quickdial::kSearchRequest :
+        HasArgument(L"--lookup") ? quickdial::kLookupRequest : quickdial::kStatusRequest;
+    return quickdial::RunLauncherDiagnostic(mode,
+        ArgumentAfter(mode == quickdial::kSearchRequest ? L"--search" : L"--lookup"), output);
+  }
 
   BenchmarkEvents benchmarkEvents = OpenBenchmarkEvents();
   if (benchmarkEvents.requested && (!benchmarkEvents.ready || !benchmarkEvents.presented)) {
@@ -83,21 +112,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       shellMode ? quickdial::kMessageEnterShellMode : quickdial::kMessageShowLauncher,
       instanceError, shellMode ? &forwardedReply : nullptr);
   if (instanceStart == quickdial::InstanceStart::Failed) {
-    MessageBoxW(nullptr, instanceError.c_str(), L"Application Quick Dial", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, instanceError.c_str(), L"Blade Launcher", MB_OK | MB_ICONERROR);
     return 1;
   }
   if (instanceStart == quickdial::InstanceStart::Forwarded) {
     if (shellMode && forwardedReply != 1) {
-      MessageBoxW(nullptr, L"The running Quick Dial does not support shell mode. Exit it and run this version again.",
-                  L"Application Quick Dial", MB_OK | MB_ICONERROR);
+      MessageBoxW(nullptr, L"The running Launcher does not support shell mode. Exit it and run this version again.",
+                  L"Blade Launcher", MB_OK | MB_ICONERROR);
       return 1;
     }
     return 0;
   }
 
+  const auto appearanceFile=ArgumentAfter(L"--appearance");
+  blade_appearance_initialize(appearanceFile.empty() ? nullptr : reinterpret_cast<const uint16_t*>(appearanceFile.c_str()));
   quickdial::LauncherApp application(benchmarkEvents.presented.get(), {}, shellMode);
   if (!application.Initialize(instance)) {
-    MessageBoxW(nullptr, L"Application Quick Dial could not be initialized.", L"Application Quick Dial",
+    MessageBoxW(nullptr, L"Blade Launcher could not be initialized.", L"Blade Launcher",
                 MB_OK | MB_ICONERROR);
     return 1;
   }

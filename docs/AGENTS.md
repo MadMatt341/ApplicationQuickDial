@@ -16,4 +16,4 @@ Applies to `docs/`; root instructions also route root documentation edits here.
 - Add a scoped `AGENTS.md` only for rules that apply to that directory; do not create empty levels or repeat inherited rules. Explicit task links provide more useful selection than deeper folders alone in this small repository.
 - Prefer durable diagnosis procedures to incident transcripts. Keep machine-specific paths, SIDs, logs, and temporary plans in ignored output directories.
 - Check local links and heading anchors, source paths, moved-section coverage, and `git diff --check`. Update incoming links after a move. No native build is needed for documentation-only edits.
-- The release ZIP contains only the executable, README, and LICENSE. README links to user reference documents must work from the ZIP, using repository URLs where needed.
+- The release ZIP contains the executable, Register-LauncherApp.ps1, Migrate-LauncherStartup.ps1, README, and LICENSE. README links to user reference documents must work from the ZIP, using repository URLs where needed.

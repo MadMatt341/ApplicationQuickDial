@@ -1,0 +1,217 @@
+#include "CatalogRegistration.h"
+#include "Catalog.h"
+#include "InstalledApps.h"
+#include "InstalledAppsWatcher.h"
+#include "MainMenu.h"
+#include "RefreshPolicy.h"
+#include <windows.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
+#include <filesystem>
+#include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <winrt/base.h>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.Collections.h>
+
+namespace {
+int failures = 0;
+void Check(bool condition, const char* description) {
+  if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+}
+void Write(const std::filesystem::path& path, std::string_view text) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  file.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+std::string Read(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(file), {}};
+}
+quickdial::ApplicationEntry App(std::wstring name, std::wstring target, quickdial::ApplicationSource source) {
+  quickdial::ApplicationEntry app;
+  app.name = std::move(name); app.target = std::move(target); app.source = source;
+  return app;
+}
+void TestPowerSearch() {
+  using namespace quickdial;
+  Catalog catalog;
+  catalog.applications.push_back(App(L"Reboot notebook", L"app.exe", ApplicationSource::Manual));
+  for (const auto [query, action] : {std::pair{L"shutdown", MenuItemId::ShutDown}, {L"  POWER OFF  ", MenuItemId::ShutDown},
+      {L"restart", MenuItemId::Restart}, {L"reboot", MenuItemId::Restart}, {L"log off", MenuItemId::SignOut}}) {
+    const auto result = RankLauncherResults(catalog, MenuPage::Main, query);
+    Check(!result.empty() && result.front().kind == LauncherResult::Kind::Command && result.front().command == action,
+        "exact root action names and aliases outrank colliding apps");
+  }
+  const auto partial = RankLauncherResults(catalog, MenuPage::Main, L"reb");
+  Check(partial.size() == 2 && partial[0].kind == LauncherResult::Kind::Application &&
+      partial[1].kind == LauncherResult::Kind::Command && partial[1].command == MenuItemId::Restart,
+      "partial commands follow apps with explicit result types");
+  for (const auto query : {L"re", L"r", L"shutdwon", L"restarrt"}) {
+    const auto results = RankLauncherResults(catalog, MenuPage::Main, query);
+    Check(std::none_of(results.begin(), results.end(), [](const auto& item) { return item.kind == LauncherResult::Kind::Command; }),
+        "short and fuzzy root queries never produce power commands");
+  }
+  const auto empty = RankLauncherResults(catalog, MenuPage::Main, L"");
+  Check(empty.size() == 2 && empty[0].command == MenuItemId::System && empty[1].command == MenuItemId::Appearance, "empty root retains System navigation");
+}
+void TestRefresh() {
+  quickdial::RefreshPolicy policy;
+  Check(policy.NeedsCatchUp(0, false), "first open without a healthy cache requests discovery");
+  Check(policy.Changed(100) == 750 && policy.Changed(2800) == 300 && policy.Changed(3200) == 1,
+      "continuous events cannot postpone discovery beyond the maximum debounce");
+  policy.Begin();
+  Check(policy.Completed(4000, true) == 2000, "an installation event has a bounded readiness retry after success");
+  policy.Begin();
+  Check(policy.Completed(6000, false) == 5000, "a failed source advances the same retry budget");
+  policy.Begin();
+  Check(!policy.Completed(11000, false), "retry exhaustion stops polling even when Windows remains unavailable");
+  Check(!policy.NeedsCatchUp(12000, false) && policy.NeedsCatchUp(12000, true) && policy.NeedsCatchUp(304000, false),
+      "healthy fresh cache avoids scanning; failures and stale cache catch up on open");
+  Check(policy.Changed(12000) == 750, "a later installation starts a fresh bounded sequence");
+  policy.Reset();
+  Check(policy.NeedsCatchUp(12000, false), "disabling discovery clears refresh readiness");
+}
+void TestPartialWatcher(const std::filesystem::path& directory) {
+  quickdial::InstalledAppsWatcher watcher;
+  std::wstring error;
+  // One nonexistent owned tree fails; the other subscription must stay live.
+  const HWND window = CreateWindowW(L"STATIC", L"Watcher fixture", 0, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+  Check(window != nullptr, "watcher fixture creates a valid owned HWND");
+  if (!window) return;
+  const auto working = directory / L"Watched";
+  std::filesystem::create_directory(working);
+  const std::filesystem::path paths[] = {working, directory / L"Missing watch tree"};
+  Check(watcher.Start(window, WM_APP + 91, error, paths) && !error.empty() &&
+      watcher.IsRunning() && !watcher.DirectoryHandles().empty(),
+      "failed watch registration retains independent physical Start-menu subscriptions");
+  Write(working / L"change.txt", "event");
+  Check(watcher.DirectoryHandles().size() == 1 && WaitForSingleObject(watcher.DirectoryHandles()[0], 3000) == WAIT_OBJECT_0 &&
+      watcher.ConsumeDirectoryChange(0, error), "the surviving subscription delivers a real native change");
+  Check(watcher.Stop() && !watcher.IsRunning() && watcher.DirectoryHandles().empty(),
+      "partial subscriptions release all owned handles");
+  DestroyWindow(window);
+}
+void TestSourcesAndMaintenance() {
+  using namespace quickdial;
+  const auto oldShell = App(L"Old Windows app", L"shell:old", ApplicationSource::AppsFolder);
+  const auto oldShortcut = App(L"Removed shortcut", L"old.lnk", ApplicationSource::UserStartMenu);
+  const auto added = App(L"Added shortcut", L"new.lnk", ApplicationSource::UserStartMenu);
+  InstalledAppsResult refresh{{added}, {}, {{ApplicationSource::AppsFolder, false, 0, L"fixture failure"},
+      {ApplicationSource::UserStartMenu, true, 1, {}}}};
+  const auto reconciled = ReconcileDiscoverySources({oldShell, oldShortcut}, refresh);
+  Check(reconciled.size() == 2 && std::any_of(reconciled.begin(), reconciled.end(), [](const auto& app) { return app.target == L"shell:old"; }) &&
+      std::none_of(reconciled.begin(), reconciled.end(), [](const auto& app) { return app.target == L"old.lnk"; }),
+      "failed provider keeps its cache while a healthy provider adds and removes shortcuts");
+  Check(ReconcileDiscoverySources(reconciled, {{}, L"total failure"}).size() == 2, "total failure preserves every cached source");
+  Catalog catalog;
+  auto uninstaller = App(L"Odinstaluj - fixture", L"remove.lnk", ApplicationSource::UserStartMenu);
+  uninstaller.resolvedTarget = L"C:\\Fixture\\unins000.exe";
+  auto wrapper = App(L"Uninstall Notes", L"notes.lnk", ApplicationSource::UserStartMenu);
+  wrapper.resolvedTarget = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  wrapper.shortcutArguments = L"-NoProfile -File \"C:\\Notes\\Uninstall.ps1\"";
+  auto tool = App(L"Uninstall Tool", L"shell:tool", ApplicationSource::AppsFolder);
+  tool.identity = L"Vendor.UninstallTool!App";
+  auto docs = App(L"Uninstall instructions", L"instructions.url", ApplicationSource::UserStartMenu);
+  docs.resolvedTarget = L"https://example.invalid/uninstall";
+  Check(IsMaintenanceApplication(uninstaller) && IsMaintenanceApplication(wrapper) &&
+      !IsMaintenanceApplication(tool) && !IsMaintenanceApplication(docs),
+      "maintenance classification uses command evidence and preserves legitimate uninstall tools and docs");
+  auto merged = MergeInstalledApplications(catalog, {uninstaller, wrapper, tool, docs});
+  Check(merged.applications.size() == 2, "automatic maintenance entries are hidden by default");
+  catalog.includedApplications = {L"REMOVE.LNK"};
+  Check(MergeInstalledApplications(catalog, {uninstaller, wrapper, tool, docs}).applications.size() == 3,
+      "case-insensitive inclusion overrides maintenance filtering");
+  catalog.hiddenApplications = {L"remove.lnk"};
+  Check(MergeInstalledApplications(catalog, {uninstaller}, true).applications.empty(),
+      "explicit hidden rules win over maintenance visibility and inclusion");
+  catalog = {};
+  auto manual = uninstaller; manual.source = ApplicationSource::Manual;
+  catalog.applications = {manual};
+  Check(MergeInstalledApplications(catalog, {uninstaller}).applications.size() == 1, "manual maintenance entries are preserved");
+  Check(EquivalentLaunchKey(L"C:/APP.exe", L"--book \"two words\"") == EquivalentLaunchKey(L"c:\\app.EXE", L"--book \"two words\"") &&
+      EquivalentLaunchKey(L"c:\\app.exe", L"--book A") != EquivalentLaunchKey(L"c:\\app.exe", L"--book a"),
+      "launch identity normalizes paths while preserving argument case");
+  auto one = added; one.resolvedTarget = L"C:\\app.exe"; one.shortcutArguments = L"--book one";
+  one.launchKey = EquivalentLaunchKey(one.resolvedTarget, one.shortcutArguments);
+  auto equivalent = one; equivalent.target = L"other.lnk"; equivalent.source = ApplicationSource::AppsFolder;
+  auto different = one; different.target = L"two.lnk"; different.shortcutArguments = L"--book two";
+  different.launchKey = EquivalentLaunchKey(different.resolvedTarget, different.shortcutArguments);
+  Check(MergeInstalledApplications({}, {one, equivalent, different}).applications.size() == 2,
+      "equivalent launch commands deduplicate while different arguments remain separate apps");
+  auto differentDirectory = one;
+  differentDirectory.target = L"different-directory.lnk";
+  differentDirectory.shortcutWorkingDirectory = L"C:\\Different library";
+  differentDirectory.launchKey = EquivalentLaunchKey(differentDirectory.resolvedTarget,
+      differentDirectory.shortcutArguments, differentDirectory.shortcutWorkingDirectory);
+  Check(MergeInstalledApplications({}, {one, differentDirectory}).applications.size() == 2,
+      "working directory variants remain separate launchable apps");
+  one.identity = L"same-app-id";
+  different.identity = L"same-app-id";
+  Check(MergeInstalledApplications({}, {one, different}).applications.size() == 2,
+      "discovered AppUserModelID variants with different arguments do not hide each other");
+}
+void TestRegistration(const std::filesystem::path& directory) {
+  using namespace winrt::Windows::Data::Json;
+  const auto catalog = directory / L"apps.json";
+  const std::string original = R"({"version":1,"discoverInstalled":false,"hiddenApplications":["hidden"],"includedApplications":["included"],"custom":{"keep":7},"applications":[{"id":"keep","name":"Keep","target":"same.exe","arguments":["one"]},{"id":"update","name":"Old","target":"old.exe","aliases":["books"],"extra":{"keep":true}}]})";
+  Write(catalog, original);
+  const auto result = quickdial::RegisterApplicationJson(catalog, LR"({"id":"update","name":"New","target":"same.exe","arguments":["two"]})");
+  Check(result.success && Read(result.backup) == original, "atomic registration keeps an exact pre-update backup");
+  const auto updated = JsonObject::Parse(winrt::to_hstring(Read(catalog)));
+  const auto apps = updated.GetNamedArray(L"applications");
+  Check(!updated.GetNamedBoolean(L"discoverInstalled") && updated.GetNamedObject(L"custom").GetNamedNumber(L"keep") == 7 &&
+      updated.GetNamedArray(L"hiddenApplications").Size() == 1 && updated.GetNamedArray(L"includedApplications").Size() == 1,
+      "registration preserves discovery settings, hidden rules, inclusion rules and unknown root fields");
+  Check(apps.Size() == 2 && apps.GetAt(0).GetObject().GetNamedString(L"id") == L"keep" &&
+      apps.GetAt(1).GetObject().GetNamedObject(L"extra").GetNamedBoolean(L"keep") &&
+      apps.GetAt(1).GetObject().GetNamedArray(L"aliases").GetStringAt(0) == L"books",
+      "registration preserves different commands, app order, unspecified aliases and unknown app fields");
+  const auto before = Read(catalog);
+  Check(!quickdial::RegisterApplicationJson(catalog, LR"({"name":"Missing identity","target":"bad.exe"})").success && Read(catalog) == before,
+      "invalid registration leaves the catalog byte-for-byte unchanged");
+  Write(catalog, "invalid JSON");
+  Check(!quickdial::RegisterApplicationJson(catalog, LR"({"id":"valid","name":"Valid","target":"app.exe"})").success && Read(catalog) == "invalid JSON",
+      "registration refuses to replace an invalid existing catalog");
+}
+void TestShortcuts(const std::filesystem::path& directory) {
+  using namespace quickdial;
+  const auto programs = directory / L"Programs";
+  std::filesystem::create_directories(programs / L"Nested");
+  Microsoft::WRL::ComPtr<IShellLinkW> link;
+  HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(link.ReleaseAndGetAddressOf()));
+  Check(SUCCEEDED(hr), "shortcut fixture has a real Windows Shell-link provider");
+  if (FAILED(hr)) return;
+  const auto target = directory / L"fixture.exe";
+  Write(target, "fixture is never launched");
+  link->SetPath(target.c_str()); link->SetArguments(L"--fixture \"two words\""); link->SetWorkingDirectory(directory.c_str());
+  Microsoft::WRL::ComPtr<IPersistFile> file;
+  link.As(&file);
+  const auto shortcut = programs / L"Nested" / L"Fixture.lnk";
+  Check(SUCCEEDED(file->Save(shortcut.c_str(), TRUE)), "fixture shortcut is persisted");
+  Write(programs / L"Website.url", "[InternetShortcut]\r\nURL=https://example.invalid/fixture\r\n");
+  Write(programs / L"Broken.lnk", "invalid shortcut");
+  const auto discovered = ReadStartMenuApplications(programs, ApplicationSource::UserStartMenu);
+  Check(discovered && discovered.applications.size() == 2 && discovered.sources.size() == 1 && discovered.sources[0].skipped == 1,
+      "recursive physical discovery finds shortcuts and URLs without a Shell index and skips one broken item");
+  const auto found = std::find_if(discovered.applications.begin(), discovered.applications.end(), [&](const auto& app) { return app.target == shortcut.wstring(); });
+  Check(found != discovered.applications.end() && found->resolvedTarget == target.wstring() && found->shortcutArguments == L"--fixture \"two words\"" &&
+      found->shortcutWorkingDirectory == directory.wstring(),
+      "the original shortcut remains the launch target and its command metadata survives discovery");
+  Check(!ReadStartMenuApplications(directory / L"Missing", ApplicationSource::UserStartMenu),
+      "source-level directory failure cannot publish a successful partial refresh");
+}
+}
+int main() {
+  winrt::init_apartment(winrt::apartment_type::single_threaded);
+  wchar_t temp[MAX_PATH]{}; GetTempPathW(MAX_PATH, temp);
+  const auto directory = std::filesystem::path(temp) / (L"BladeLauncherReliability-" + std::to_wstring(GetCurrentProcessId()));
+  try {
+    std::filesystem::create_directories(directory);
+    TestPowerSearch(); TestRefresh(); TestPartialWatcher(directory); TestSourcesAndMaintenance(); TestRegistration(directory); TestShortcuts(directory);
+  } catch (const winrt::hresult_error& error) { ++failures; std::cerr << winrt::to_string(error.message()) << '\n'; }
+    catch (const std::exception& error) { ++failures; std::cerr << error.what() << '\n'; }
+  std::error_code ignored; std::filesystem::remove_all(directory, ignored);
+  if (!failures) std::cout << "Launcher reliability checks passed\n";
+  return failures ? 1 : 0;
+}

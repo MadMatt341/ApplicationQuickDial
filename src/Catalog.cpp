@@ -153,6 +153,7 @@ CatalogResult ParseCatalogJson(std::string_view json) {
     Catalog catalog;
     catalog.discoverInstalled = OptionalBoolean(root, L"discoverInstalled", true);
     catalog.hiddenApplications = OptionalStringArray(root, L"hiddenApplications");
+    catalog.includedApplications = OptionalStringArray(root, L"includedApplications");
     JsonArray applications = root.GetNamedArray(L"applications");
     catalog.applications.reserve(applications.Size());
 

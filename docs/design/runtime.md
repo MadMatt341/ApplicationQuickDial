@@ -4,16 +4,16 @@ Read for process lifetime, threading, startup, singleton, tray, or sign-in work.
 
 ## Process model
 
-Application Quick Dial has one resident GUI process with two resident threads, bounded background work, and a temporary discovery helper:
+Blade Launcher has one resident GUI process with two resident threads, bounded background work, and a temporary discovery helper:
 
 1. The main STA thread owns COM initialization, the hidden launcher window, tray icon, catalog state, Direct2D resources, and the Win32 message loop.
 2. A hook thread installs `WH_KEYBOARD_LL` and runs the message loop required by the keyboard hook.
 3. At most one discovery worker supervises a helper process without initializing COM in the resident process. Up to two icon workers perform Shell and WIC operations in their own COM apartments. Workers exit when their queues empty.
-4. For each scan, the launcher starts another copy of its own executable in private `--discover-apps` mode. That process initializes a COM STA, enumerates Windows' Apps folder, returns plain values, and exits. It creates no window, tray icon, hook, or single-instance mutex. Shipping the app still requires only one executable.
+4. For each scan, the launcher starts another copy of its own executable in private `--discover-apps` mode. That process initializes a COM STA, reads one Windows-app or physical Start-menu provider, returns plain values, and exits. It creates no window, tray icon, hook, or single-instance mutex. Discovery still uses the same executable; automated account-verified registration is shipped as the optional self-contained `Register-LauncherApp.ps1`.
 
-`BackgroundTasks` limits both concurrency and outstanding work (one discovery request and 32 icon jobs, including completed results awaiting dispatch). Workers own shared queue state and value inputs. They post `kMessageBackgroundComplete` with no payload; the main thread drains owned completion objects. A 100 ms timer drains results while jobs are outstanding as a fallback if posting fails, and stops when the queues empty. There is no service, database, or network dependency. The JSON catalog is the only persisted application data; installed-app discovery is rebuilt from the Windows Shell namespace.
+`BackgroundTasks` limits both concurrency and outstanding work (one discovery request and 32 icon jobs, including completed results awaiting dispatch). Workers own shared queue state and value inputs. They post `kMessageBackgroundComplete` with no payload; the main thread drains owned completion objects. A 100 ms timer drains results while jobs are outstanding as a fallback if posting fails, and stops when the queues empty. There is no service, database, or network dependency. The JSON catalog is the only persisted application data; installed-app discovery is rebuilt from Windows apps and physical Start-menu sources.
 
-`InstalledAppsWatcher` owns two Shell notification registrations and two kernel directory-change handles. The main loop blocks in `MsgWaitForMultipleObjectsEx` for window messages or directory changes; watching adds no resident worker or polling loop. Shell notifications arrive as `kMessageInstalledApplicationsChanged`, and their shared-memory payload is locked and released on the main thread. No enumeration runs in these handlers.
+`InstalledAppsWatcher` owns up to two Shell notification registrations and two kernel directory-change handles; partial subscriptions remain usable and visible diagnostics identify degraded operation. The main loop blocks in `MsgWaitForMultipleObjectsEx` for window messages or directory changes; watching adds no resident worker or polling loop. Shell notifications arrive as `kMessageInstalledApplicationsChanged`, and their shared-memory payload is locked and released on the main thread. No enumeration runs in these handlers.
 
 ## Startup sequence
 
@@ -48,7 +48,7 @@ A second shell-mode launch forwards `kMessageEnterShellMode` to the existing ins
 The message returns `1` after switching modes and hiding the launcher. An older instance
 that does not acknowledge it produces an explicit restart/update error. No pointer data
 crosses that message boundary. Explorer replacement and emergency recovery are owned by
-the host shell, not Quick Dial.
+the host shell, not Launcher.
 
 ## Tray and sign-in integration
 
@@ -87,3 +87,11 @@ Use a permanent executable location. A linked Git worktree (a `.git` file) refus
 `LauncherApp` owns HWND-related state, GDI objects, COM factories, the render target, cached images, background queues, the pending launch entry, and `HookManager`. Internal `kMessageLaunchSelection` carries no payload; the main STA activates the captured entry after the input handler returns. Window destruction requests discovery cancellation and stops the queues: it revokes their notification HWND under the same lock used for posting and discards queued jobs and completions. Detached workers hold only shared state and value inputs; late completions are destroyed without accessing the window or its owner. Shutdown never waits for a stalled Shell operation, and no completed thread handles accumulate. A stalled icon operation occupies only its bounded worker slot until it returns or the process exits; discovery runs in the separately supervised helper described above.
 
 `HookManager::Stop` posts `WM_QUIT` to its thread and joins it. Window destruction removes the tray icon, stops timers, and posts the main-thread quit message. Destructors repeat safe cleanup for partial initialization and failure paths.
+
+## Diagnostic boundary
+
+`--status --output <absolute JSON file>` reads the running desktop-local instance. `--lookup <text> --output <file>` includes matching configured/discovered entries and inclusion reasons. `--search <text> --output <file>` opens the existing instance and sets its query; it never activates a result. Reports identify executable/version/PID, account/catalog path, provider health/skipped counts, watcher/parse/discovery errors, refresh state, entry commands/icons and the actual typed visible results. Old instances reject unsupported diagnostics with an explicit update error.
+
+Bounded `WM_COPYDATA` copies each request into a main-thread queue (maximum eight), then a posted message generates the response outside synchronous input. The caller pumps replies with a bounded wait. This avoids Windows Runtime/COM activation inside an incoming sent message. No shared application pointers or arbitrary receiver file writes cross the boundary. The caller writes its own report. Request text is capped at 4095 UTF-16 code units; responses at four MiB; NUL and framing validation precede dispatch. Calls have bounded timeouts and do not bypass the singleton. The protocol is read-only except the explicit `--search` UI request; it has no launch or power-action verb.
+
+`--register-app <single-app JSON> --account <SID> --output <report>` and read-only `--catalog-status` are native helpers before singleton setup. The public [registration script](../registration.md) creates ordinary account-checked Windows processes and requires independent readback; inherited packaged context is rejected. They do not require replacing or stopping the running instance.

@@ -4,6 +4,8 @@
 #include "IconLoader.h"
 #include "MainMenu.h"
 #include "SystemPower.h"
+#include "RefreshPolicy.h"
+#include "InstalledApps.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -11,6 +13,7 @@
 #include <wrl/client.h>
 
 #include <filesystem>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -90,10 +93,14 @@ class LauncherApp {
   void ExecutePendingLaunch();
   bool LaunchApplication(const ApplicationEntry& application, std::wstring& error);
   void OpenCatalog();
+  void AddApplication();
+  void OpenDiagnostics();
+  std::wstring DiagnosticReport(std::wstring_view lookup = {}) const;
 
   HRESULT EnsureRenderTarget();
   void ReleaseDeviceResources();
   void Render();
+  void DrawContent(ID2D1RenderTarget* target, bool applicationIcons);
   Microsoft::WRL::ComPtr<ID2D1Bitmap> GetApplicationIcon(std::size_t applicationIndex);
   std::wstring IconKey(const ApplicationEntry& application) const;
 
@@ -119,7 +126,12 @@ class LauncherApp {
   bool discoveryPending_ = false;
   bool discoveryAgain_ = false;
   bool discoveryChangePending_ = false;
+  bool discoveryRetryPending_ = false;
   bool notifyAfterDiscovery_ = false;
+  RefreshPolicy refreshPolicy_;
+  std::vector<DiscoverySourceStatus> sourceStatus_;
+  std::uint64_t lastRefreshTick_ = 0;
+  bool showMaintenance_ = false;
   std::wstring installedApplicationsError_;
   std::wstring installedApplicationsWatchError_;
   std::wstring catalogFileError_;
@@ -134,6 +146,9 @@ class LauncherApp {
   std::function<bool(MenuItemId, std::wstring&)> requestPowerAction_ = RequestSystemPowerAction;
   bool queryHasText_ = false;
   std::vector<std::size_t> results_;
+  std::vector<LauncherResult> searchResults_;
+  struct DiagnosticRequest { HWND client; ULONG_PTR mode; std::wstring query; };
+  std::deque<DiagnosticRequest> diagnosticRequests_;
   std::size_t selectedResult_ = 0;
   std::size_t firstVisibleResult_ = 0;
   int wheelRemainder_ = 0;

@@ -28,7 +28,7 @@ InstanceStart Forward(HWND window, UINT message, std::wstring& error, DWORD_PTR*
     if (forwardedReply) *forwardedReply = result;
     return InstanceStart::Forwarded;
   }
-  error = L"The existing Quick Dial window could not be opened (Windows error " +
+  error = L"The existing Launcher window could not be opened (Windows error " +
       std::to_wstring(GetLastError()) + L"). Close that instance and try again.";
   return InstanceStart::Failed;
 }
@@ -58,7 +58,7 @@ InstanceStart SingleInstance::Start(const wchar_t* windowClass, UINT showMessage
   mutex_ = CreateMutexW(nullptr, TRUE, name.c_str());
   const DWORD creationError = GetLastError();
   if (!mutex_) {
-    error = L"Could not establish the Quick Dial instance for this desktop (Windows error " +
+    error = L"Could not establish the Launcher instance for this desktop (Windows error " +
         std::to_wstring(creationError) + L").";
     return InstanceStart::Failed;
   }
@@ -75,12 +75,12 @@ InstanceStart SingleInstance::Start(const wchar_t* windowClass, UINT showMessage
     if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
       owned_ = true;
     } else if (wait == WAIT_FAILED) {
-      error = L"Could not wait for the existing Quick Dial instance (Windows error " +
+      error = L"Could not wait for the existing Launcher instance (Windows error " +
           std::to_wstring(GetLastError()) + L").";
       return InstanceStart::Failed;
     } else if (GetTickCount64() >= deadline) {
-      error = L"Quick Dial is already starting on this desktop, but its window is not ready. Try again shortly; "
-              L"if the problem persists, close that instance and restart Quick Dial.";
+      error = L"Launcher is already starting on this desktop, but its window is not ready. Try again shortly; "
+              L"if the problem persists, close that instance and restart Launcher.";
       return InstanceStart::Failed;
     }
   }
