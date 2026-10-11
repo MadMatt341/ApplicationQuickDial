@@ -3,12 +3,13 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <algorithm>
 
 namespace quickdial {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x31445141;  // AQD1
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::uint32_t kMaximumEntries = 16'384;
 constexpr std::uint32_t kMaximumString = 32'768;
 constexpr std::size_t kHeaderBytes = 4 * sizeof(std::uint32_t);
@@ -65,11 +66,28 @@ bool WriteDiscoveryResult(std::span<std::byte> buffer, const InstalledAppsResult
   if (result.applications.size() > kMaximumEntries || (!result && !result.applications.empty())) return false;
   Writer writer{buffer};
   if (!writer.String(result.error)) return false;
+  if (result.sources.size() > 3 || !writer.Number(static_cast<std::uint32_t>(result.sources.size()))) return false;
+  std::uint32_t seen = 0;
+  for (const auto& source : result.sources) {
+    const auto id = static_cast<std::uint32_t>(source.source);
+    if (id < 1 || id > 3 || (seen & (1U << id)) ||
+        !writer.Number(id) || !writer.Number(source.succeeded ? 1 : 0) ||
+        !writer.Number(source.skipped) || !writer.String(source.error) ||
+        (source.succeeded && !source.error.empty())) return false;
+    seen |= 1U << id;
+  }
   for (const auto& application : result.applications) {
+    if (!result.sources.empty() && std::none_of(result.sources.begin(), result.sources.end(),
+        [&application](const auto& source) { return source.source == application.source && source.succeeded; })) return false;
     if (application.name.empty() || application.target.empty() ||
         !writer.String(application.name) || !writer.String(application.target) ||
         !writer.Number(application.identity.has_value() ? 1 : 0) ||
-        (application.identity && !writer.String(*application.identity))) {
+        (application.identity && !writer.String(*application.identity)) ||
+        static_cast<std::uint32_t>(application.source) > 3 ||
+        !writer.Number(static_cast<std::uint32_t>(application.source)) ||
+        !writer.String(application.resolvedTarget) || !writer.String(application.shortcutArguments) ||
+        !writer.String(application.shortcutWorkingDirectory) ||
+        !writer.String(application.launchKey)) {
       return false;
     }
   }
@@ -90,6 +108,19 @@ InstalledAppsResult ReadDiscoveryResult(std::span<const std::byte> buffer) {
   reader.buffer = buffer.first(size);
   InstalledAppsResult result;
   if (!reader.String(result.error) || (!result && count != 0)) return InvalidResult();
+  std::uint32_t sources = 0, seen = 0;
+  if (!reader.Number(sources) || sources > 3) return InvalidResult();
+  for (std::uint32_t index = 0; index < sources; ++index) {
+    DiscoverySourceStatus source;
+    std::uint32_t id = 0, succeeded = 0;
+    if (!reader.Number(id) || id < 1 || id > 3 || (seen & (1U << id)) ||
+        !reader.Number(succeeded) || succeeded > 1 || !reader.Number(source.skipped) ||
+        !reader.String(source.error) || (succeeded && !source.error.empty())) return InvalidResult();
+    source.source = static_cast<ApplicationSource>(id);
+    source.succeeded = succeeded != 0;
+    seen |= 1U << id;
+    result.sources.push_back(std::move(source));
+  }
   for (std::uint32_t index = 0; index < count; ++index) {
     ApplicationEntry application;
     std::uint32_t hasIdentity = 0;
@@ -102,6 +133,14 @@ InstalledAppsResult ReadDiscoveryResult(std::span<const std::byte> buffer) {
       application.identity.emplace();
       if (!reader.String(*application.identity)) return InvalidResult();
     }
+    std::uint32_t source = 0;
+    if (!reader.Number(source) || source > 3 || !reader.String(application.resolvedTarget) ||
+        !reader.String(application.shortcutArguments) || !reader.String(application.shortcutWorkingDirectory) ||
+        !reader.String(application.launchKey)) return InvalidResult();
+    application.source = static_cast<ApplicationSource>(source);
+    if (sources && std::none_of(result.sources.begin(), result.sources.end(), [source](const auto& status) {
+      return static_cast<std::uint32_t>(status.source) == source && status.succeeded;
+    })) return InvalidResult();
     result.applications.push_back(std::move(application));
   }
   return reader.offset == size ? std::move(result) : InvalidResult();

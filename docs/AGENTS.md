@@ -19,4 +19,4 @@ For reading and writing rules, use the [documentation policy](documentation.md).
 - Prefer durable diagnosis procedures to incident transcripts. Keep machine-specific paths, SIDs, logs, and temporary plans in ignored output directories.
 - Examine all new and changed documentation text for compliance with [ASD-STE100](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
 - Check local links and heading anchors, source paths, moved-section coverage, and `git diff --check`. Update incoming links after a move. No native build is needed for documentation-only edits.
-- The release ZIP contains only the executable, README, and LICENSE. README links to user reference documents must work from the ZIP, using repository URLs where needed.
+- The release ZIP contains the executable, Register-LauncherApp.ps1, Migrate-LauncherStartup.ps1, README, and LICENSE. README links to user reference documents must work from the ZIP, using repository URLs where needed.

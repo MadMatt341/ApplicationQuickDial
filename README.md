@@ -1,6 +1,6 @@
-# Application Quick Dial
+# Blade Launcher
 
-A small Windows 11 x64 launcher for installed applications and optional manual entries. It lives in the notification tray and opens with **Win+Space**.
+A Windows 11 x64 launcher for applications and system actions, with optional manual entries. It lives in the notification tray and opens with **Win+Space**.
 
 ## Install
 
@@ -14,12 +14,20 @@ Release binaries are unsigned and Windows may show a security warning. Each ZIP 
 
 ## Use
 
-- **Win+Space** shows or hides the search bar. Type an application name, alias, or app identifier; clearing the query returns to the main menu with **System** below the search divider.
+- **Win+Space** shows or hides the search bar. Type an application name, alias, app identifier, or `shutdown`, `power off`, `restart`, or `reboot`; clearing the query returns to the main menu with **System** below the search divider.
 - **Up/Down** selects and **Enter** opens the selected app or menu item. **System** contains **Shut down**, **Restart**, and **Sign out**; selecting an action sends the request immediately. **Escape** or the back arrow returns from System, and Escape on the main menu hides it. Scroll or use the arrow keys to reach all matches; at most six rows are visible.
 - Click a result to launch it. Press **F10** in the search field for the menu, or use the tray icon for configuration, reload, startup, and exit commands.
-- Installed applications are discovered automatically and refreshed when Windows reports changes.
+- Applications are read from Windows’ app list and the user/shared Start menus. Changes refresh automatically; failed sources retain their last good entries. Obvious uninstall commands are hidden by default. **F10 → Show maintenance entries** reveals them.
+- **F10 → Add application…** registers a file or shortcut. **Diagnostics** explains the catalog, source health and exclusions. For automated registration, use the included `Register-LauncherApp.ps1`; see the [registration guide](https://github.com/MadMatt341/ApplicationQuickDial/blob/main/docs/registration.md).
 
-While running, Quick Dial replaces Windows' normal **Win+Space** keyboard-layout shortcut. The shortcut is unavailable on the secure desktop and may not intercept input aimed at an elevated application; the tray icon is the fallback.
+
+Blade Charcoal now supplies the shared appearance. Use the Appearance entry in
+Launcher/maintenance or edit `%LOCALAPPDATA%\Blade\Appearance\appearance.json`
+for colors, fonts and component presentation that survive Blade updates.
+[The owning theme contract](https://github.com/MadMatt341/WindowManager/blob/main/docs/shell-themes.md)
+describes validation, explicit legacy import and the remaining installed checks.
+
+While running, Launcher replaces Windows' normal **Win+Space** keyboard-layout shortcut. The shortcut is unavailable on the secure desktop and may not intercept input aimed at an elevated application; the tray icon is the fallback.
 
 ## Use with a custom shell
 
@@ -35,6 +43,8 @@ explicitly starting `explorer.exe`. Files or folders can still invoke their regi
 handler, including File Explorer when that is the requested application.
 
 ## Configure or develop
+
+The UI name is **Launcher** and the full product name is **Blade Launcher**. The executable, startup identifiers and existing settings directory retain `ApplicationQuickDial` for compatibility. No settings migration or reset is required.
 
 Preferences and optional manual entries live in `%LOCALAPPDATA%\ApplicationQuickDial\apps.json`. First run creates a discovery-only catalog; updating the executable does not overwrite it.
 

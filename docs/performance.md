@@ -1,6 +1,6 @@
 # Performance contract
 
-Application Quick Dial is a resident utility, so its performance contract covers both responsiveness and the cost of leaving it running all day. The benchmark is native, launches the real Release executable, and exits with a failure code when a budget is exceeded.
+Blade Launcher is a resident utility, so its performance contract covers both responsiveness and the cost of leaving it running all day. The benchmark is native, launches the real Release executable, and exits with a failure code when a budget is exceeded.
 
 ## Budgets
 
@@ -45,7 +45,7 @@ The runner uses `GetProcessMemoryInfo` for total working set and private committ
 
 ## Run it
 
-Exit the resident Quick Dial process first, then run from the repository root:
+Exit the resident Launcher process first, then run from the repository root:
 
 ```powershell
 cmake --build build --config Release --parallel

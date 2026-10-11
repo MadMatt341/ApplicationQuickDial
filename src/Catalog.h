@@ -8,6 +8,8 @@
 
 namespace quickdial {
 
+enum class ApplicationSource { Manual, AppsFolder, UserStartMenu, CommonStartMenu };
+
 struct ApplicationEntry {
   std::wstring name;
   std::wstring target;
@@ -16,11 +18,18 @@ struct ApplicationEntry {
   std::vector<std::wstring> arguments;
   std::optional<std::wstring> workingDirectory;
   std::optional<std::wstring> icon;
+  // Discovery metadata stays in memory; launching a shortcut retains its semantics.
+  ApplicationSource source = ApplicationSource::Manual;
+  std::wstring resolvedTarget;
+  std::wstring shortcutArguments;
+  std::wstring shortcutWorkingDirectory;
+  std::wstring launchKey;
 };
 
 struct Catalog {
   bool discoverInstalled = true;
   std::vector<std::wstring> hiddenApplications;
+  std::vector<std::wstring> includedApplications;
   std::vector<ApplicationEntry> applications;
 };
 

@@ -35,6 +35,7 @@ Run `.\build\Release\ApplicationQuickDial.exe` on the user's normal desktop. It 
 
 | Task | Source | Read next | Verify |
 |---|---|---|---|
+| Automated app registration/native catalog identity | `src/CatalogRegistration.*`, `Register-LauncherApp.ps1` | [Registration](registration.md) | Reliability fixtures; independent native readback |
 | Catalog fields or parsing | `src/Catalog.*` | [Schema](catalog.md), [lifecycle](design/catalog-discovery.md#catalog-lifecycle) | Core tests; catalog reload |
 | App discovery, merge, notifications | `src/InstalledApps.*`, `src/InstalledAppsWatcher.*`, `src/LauncherApp.cpp` | [Catalog/discovery](design/catalog-discovery.md) | Core, discovery and launcher tests; real installation check for watcher changes |
 | Helper lifetime or transport | `src/DiscoveryProcess.*`, `src/DiscoveryProtocol.*`, `src/main.cpp` | [Process boundary](design/catalog-discovery.md#discovery-process-boundary) | Discovery tests; relevant performance contract |
@@ -51,3 +52,12 @@ Run `.\build\Release\ApplicationQuickDial.exe` on the user's normal desktop. It 
 Detailed test commands and manual scenarios live in [testing.md](testing.md); do not run unrelated manual sections.
 
 For repository build sign-in registration, use [the startup script](design/runtime.md#tray-and-sign-in-integration).
+
+## Shared appearance build
+
+The default sibling WindowManager source supplies `appearance/BladeAppearance.cmake`
+and the statically linked Rust resolver. Cargo is required unless a producer passes
+`-DBLADE_APPEARANCE_LIBRARY=PATH`. `-DBLADE_SOURCE_ROOT=PATH` binds headers/defaults
+to the exact matching source snapshot. This adds no runtime theme DLL. Keep
+source/library provenance together; the runtime user appearance path is independent
+of these build locations. See [rendering](design/interaction-rendering.md).

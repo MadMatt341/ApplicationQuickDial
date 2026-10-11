@@ -34,11 +34,13 @@ Every edit-control `EN_CHANGE` notification calls `UpdateResults`. The query is 
 | 4-7 | the same four match classes on an alias |
 | 8-11 | the same four match classes on an AppUserModelID, target filename, or custom URI scheme |
 
-Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty or whitespace-only query returns no application results and shows a built-in System row below the search divider. Typing on the main page searches applications; clearing the query restores System. System opens a submenu with Shut down, Restart and Sign out. Its search field filters those actions by name or aliases (`shutdown`, `power off`, `reboot`), using the same ranking rules. System entries remain available without a valid application catalog. The UI retains all ranked matches and renders at most six rows from a scrollable viewport. Query changes reset the viewport. Keyboard navigation keeps selection visible; wheel input accumulates partial deltas and follows the Windows scroll-line preference. Mouse hit testing accounts for the viewport offset.
+Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty or whitespace-only query returns no application results and shows System and Appearance rows below the search divider. Typing on the main page searches typed application and command results; clearing the query restores the main rows. Appearance opens the shared user appearance file in Notepad. System opens a submenu with Shut down, Restart and Sign out. Its search field filters those actions by name or aliases (`shutdown`, `power off`, `reboot`), using the same ranking rules. System entries remain available without a valid application catalog. The UI retains all ranked matches and renders at most six rows from a scrollable viewport. Query changes reset the viewport. Keyboard navigation keeps selection visible; wheel input accumulates partial deltas and follows the Windows scroll-line preference. Mouse hit testing accounts for the viewport offset.
 
 F10 opens the launcher menu without needing a notification tray. Up and Down wrap around the result list. Enter or a left click activates the selected app or built-in menu item. Escape and the clickable back arrow in the System header return to the main page and clear the submenu filter; Escape on the main page hides the window. Every reopening starts on the main page. Changing the query resets selection to the first result.
 
 Enter and Escape ignore auto-repeat, so one held key cannot enter System and then activate a power action, or return to main and immediately dismiss it. The edit subclass handles Enter and Escape on `WM_KEYDOWN` and consumes their queued `WM_CHAR` messages so the single-line edit control does not play an invalid-character beep.
+
+Root search recognizes `shutdown`, `power off`, `restart`, `reboot`, and sign-out aliases. Exact command labels/aliases precede apps; partial command matches require at least three non-whitespace characters and follow app matches. Power commands have no fuzzy matching. Result dispatch, painting, scrolling, hit testing and refresh selection use one typed `LauncherResult` vector, preventing an app index from being mistaken for a command. Command rows display “System action”. Empty search retains System navigation.
 
 ## Window and rendering
 
@@ -48,7 +50,32 @@ The Launcher window stays in view or out of view during theme, settings, and pos
 
 On show, it chooses the foreground window's monitor, falling back to the cursor monitor, and positions itself near the upper center of that monitor's work area. Width and row dimensions are constants in device-independent pixels; `ResizeAndPosition` and `LayoutEditControl` scale them for monitor DPI. Height follows the number of visible results (up to six), a System header when inside that submenu, and an optional error row. The System header has a separate back-arrow hit area and is excluded from action-row hit testing.
 
-The search field is a native edit control. The rest is rendered with Direct2D and DirectWrite. Theme colors follow `AppsUseLightTheme` and are refreshed whenever the launcher opens.
+The search field is a native edit control. The rest is rendered with Direct2D and DirectWrite. Blade Charcoal uses the shared fixed dark appearance, independent of
+`AppsUseLightTheme`. [The Blade contract](https://github.com/MadMatt341/WindowManager/blob/main/docs/shell-themes.md) owns selection,
+validation, defaults, bounds and accessibility precedence. Launcher statically
+links the same resolver as Rail/Rust, then adapts it through `LauncherVisualStyle`.
+Colors, installed font fallback, named text sizes, selection corners and component
+width/search/result sizes come from that resolver. Search placeholder ink and
+native edit/menu controls also use shared roles. Windows owns outer chrome.
+
+The Charcoal launcher is 540 logical pixels wide. The search row is 52 pixels
+high; result rows are 44 pixels high. Search text is 16 pixels. Launcher uses
+the shared `launcherFamilies` font role. Rail keeps its existing font role.
+
+The native font metrics set the search control height and vertical position.
+The placeholder uses the native text rectangle and search background.
+The text keeps its vertical position when the user starts to type.
+The background color does not change.
+
+The search row shows an Escape hint. The bottom row shows navigation and Enter
+hints. These hints do not add click targets or change keyboard commands.
+
+`--appearance FILE` / `BLADE_APPEARANCE_FILE` select isolated development settings;
+normally `%LOCALAPPDATA%\Blade\Appearance\appearance.json` is the one edit point.
+The main Appearance entry and F10 menu open it. Appearance reload updates fonts,
+brushes and dimensions on the UI thread, preserving HWNDs, query, selection,
+catalog/provider activity and existing shortcuts. Invalid live edits retain
+the last valid theme. No hook reads theme files or launches a resolver service.
 
 Icon resolution is lazy and follows this order:
 
@@ -62,9 +89,11 @@ For ICO files, decoding chooses the smallest frame at least as large as the requ
 
 Device-dependent bitmaps are cached by catalog index and released on catalog rebuild, hide, DPI change, or render-target loss. A separate least-recently-used source cache holds at most 128 scaled images or failed lookups, keyed by target, explicit icon path, and DPI, so reopening does not repeat decoding. Explicit tray reload clears source entries and advances a generation counter; late results from older generations are ignored.
 
+System icons use one vector drawing module: a gapped power ring/stem, an open restart arc with tangent arrowhead, and a sign-out door/arrow. Geometry and strokes align to physical pixels and use the current theme’s normal/selected text color. Verify Charcoal at 96/120/144/192 DPI and with both Windows app palette preferences (the result remains fixed). Inactive-desktop screen copies omit Direct2D presentation; bounded software captures reuse the production drawing path and do not establish active compositor/installed acceptance.
+
 ## System power actions
 
-Built-in menu items have explicit command identities separate from application catalog indexes and launch targets. `MainMenu` owns section entries and scoped search; `SystemPower` owns the Windows effect. These actions work in normal and custom-shell modes and do not depend on Rail or Explorer.
+Built-in menu items have explicit command identities separate from application catalog indexes and launch targets. `MainMenu` owns section entries and unified search; `SystemPower` owns the Windows effect. These actions work in normal and custom-shell modes and do not depend on Rail or Explorer.
 
 Selecting Shut down or Restart captures the action and posts internal `kMessageSystemPowerAction` with no payload. Repeated requests are coalesced while queued or active; query changes cannot retarget an accepted action. Back, dismissal, and window destruction cancel a queued action before dispatch. The request runs after the input handler returns, without a confirmation dialog.
 

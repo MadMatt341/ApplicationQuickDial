@@ -1,3 +1,4 @@
+#include "blade_appearance.h"
 #include "LauncherApp.h"
 
 #include "AppMessages.h"
@@ -8,7 +9,14 @@
 #include "InstalledAppsWatcher.h"
 #include "LauncherVisualStyle.h"
 #include "Search.h"
+#include "SystemIcons.h"
 #include "StartupManager.h"
+#include "CatalogRegistration.h"
+#include "LauncherDiagnostics.h"
+#include "TextUtilities.h"
+#include <fstream>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.Collections.h>
 
 #include <appmodel.h>
 #include <windowsx.h>
@@ -40,12 +48,16 @@ constexpr UINT kCommandOpenCatalog = 1002;
 constexpr UINT kCommandReloadCatalog = 1003;
 constexpr UINT kCommandStartWithWindows = 1004;
 constexpr UINT kCommandExit = 1005;
+constexpr UINT kCommandAddApplication = 1006;
+constexpr UINT kCommandDiagnostics = 1007;
+constexpr UINT kCommandMaintenance = 1008;
+constexpr UINT kCommandAppearance = 1009;
 
 constexpr std::size_t kMaximumVisibleResults = 6;
 constexpr UINT_PTR kTrayRetryTimer = 1;
 constexpr UINT_PTR kBackgroundTimer = 2;
 constexpr UINT_PTR kInstalledApplicationsChangeTimer = 3;
-constexpr UINT kInstalledApplicationsDebounceMs = 750;
+constexpr UINT_PTR kInstalledApplicationsRetryTimer = 4;
 constexpr std::size_t kMaximumIconSources = 128;
 
 float ScaleForDpi(float value, UINT dpi) {
@@ -173,7 +185,7 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
   ReloadCatalog();
   if (shellMode_) EnterShellMode();
   if (!hookReady) {
-    ShowNotification(L"Application Quick Dial", L"Win+Space could not be captured. Run Quick Dial again to open it.");
+    ShowNotification(L"Blade Launcher", L"Win+Space could not be captured. Run Launcher again to open it.");
   }
   return true;
 }
@@ -185,7 +197,7 @@ int LauncherApp::Run() {
     const DWORD ready = MsgWaitForMultipleObjectsEx(count, directories.data(), INFINITE,
         QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     if (ready == WAIT_FAILED) {
-      ShowNotification(L"Application Quick Dial", L"Could not wait for Windows events. Restart Quick Dial.");
+      ShowNotification(L"Blade Launcher", L"Could not wait for Windows events. Restart Launcher.");
       DestroyWindow(window_);
       return 1;
     }
@@ -202,6 +214,7 @@ int LauncherApp::Run() {
 }
 
 bool LauncherApp::CreateFactories() {
+  visuals::Refresh();
   HRESULT result = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory_.ReleaseAndGetAddressOf());
   if (FAILED(result)) {
     return false;
@@ -213,24 +226,25 @@ bool LauncherApp::CreateFactories() {
     return false;
   }
   fontFamily_ = visuals::ResolveFontFamily(dwriteFactory_.Get());
-  result = dwriteFactory_->CreateTextFormat(
-      fontFamily_.c_str(), nullptr, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL,
-      DWRITE_FONT_STRETCH_NORMAL, visuals::kResultFontSize, L"", resultTextFormat_.ReleaseAndGetAddressOf());
-  if (FAILED(result)) {
-    return false;
+  return CreateTextFormats();
+}
+
+bool LauncherApp::CreateTextFormats() {
+  std::array<ComPtr<IDWriteTextFormat>, 3> formats;
+  const std::array sizes{visuals::kResultFontSize, visuals::kMessageFontSize, visuals::kHintFontSize};
+  for (std::size_t index = 0; index < formats.size(); ++index) {
+    const HRESULT result = dwriteFactory_->CreateTextFormat(
+        fontFamily_.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, sizes[index], L"", &formats[index]);
+    if (FAILED(result) ||
+        FAILED(formats[index]->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)) ||
+        FAILED(formats[index]->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)) ||
+        FAILED(formats[index]->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER))) return false;
   }
-  result = dwriteFactory_->CreateTextFormat(
-      fontFamily_.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-      DWRITE_FONT_STRETCH_NORMAL, visuals::kMessageFontSize, L"", messageTextFormat_.ReleaseAndGetAddressOf());
-  if (FAILED(result)) {
-    return false;
-  }
-  return SUCCEEDED(resultTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)) &&
-         SUCCEEDED(resultTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)) &&
-         SUCCEEDED(resultTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)) &&
-         SUCCEEDED(messageTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)) &&
-         SUCCEEDED(messageTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)) &&
-         SUCCEEDED(messageTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+  resultTextFormat_ = std::move(formats[0]);
+  messageTextFormat_ = std::move(formats[1]);
+  hintTextFormat_ = std::move(formats[2]);
+  return true;
 }
 
 bool LauncherApp::CreateMainWindow() {
@@ -247,7 +261,7 @@ bool LauncherApp::CreateMainWindow() {
   }
 
   window_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kWindowClassName, L"Application Quick Dial", WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kWindowClassName, L"Blade Launcher", WS_POPUP,
       CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(visuals::kWindowWidth), 160, nullptr, nullptr, instance_, this);
   return window_ != nullptr;
 }
@@ -256,10 +270,23 @@ void LauncherApp::ConfigureWindowAppearance() {
   const DWM_WINDOW_CORNER_PREFERENCE cornerPreference = DWMWCP_ROUND;
   DwmSetWindowAttribute(window_, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
   ApplyTheme();
+  blade_appearance_style_window(window_);
+  // Keep Launcher's native edit on its renderer-owned background. The shared
+  // native adapter still owns menus and ordinary controls in other windows.
+  if (!SetWindowSubclass(window_, AppearanceProcedure, 2, reinterpret_cast<DWORD_PTR>(this))) {
+    launchError_ = L"Could not apply the launcher search background.";
+  }
+  LayoutEditControl();
 }
 
 void LauncherApp::ApplyTheme() {
-  lightTheme_ = ReadLightThemePreference();
+  lightTheme_ = false;
+  visuals::Refresh();
+  fontFamily_ = visuals::ResolveFontFamily(dwriteFactory_.Get());
+  if (dwriteFactory_ && !CreateTextFormats()) {
+    launchError_ = L"Could not update launcher text. The previous text style is still available.";
+  }
+  LayoutEditControl();
   const BOOL darkMode = lightTheme_ ? FALSE : TRUE;
   DwmSetWindowAttribute(window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
 
@@ -275,19 +302,33 @@ void LauncherApp::LayoutEditControl() {
     return;
   }
   const int x = ScaleForDpiInt(visuals::kSearchEditLeft, dpi_);
-  const int y = ScaleForDpiInt(visuals::kSearchEditTop, dpi_);
   const int width = ScaleForDpiInt(
       visuals::kWindowWidth - visuals::kSearchEditLeft - visuals::kSearchEditRight, dpi_);
-  const int height = ScaleForDpiInt(visuals::kSearchEditHeight, dpi_);
-  SetWindowPos(edit_, nullptr, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
-
-  if (editFont_ != nullptr) {
-    DeleteObject(editFont_);
-  }
-  editFont_ = CreateFontW(
+  const HFONT replacement = CreateFontW(
       -ScaleForDpiInt(visuals::kSearchFontSize, dpi_), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, fontFamily_.c_str());
-  SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(editFont_), TRUE);
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, fontFamily_.c_str());
+  if (!replacement) {
+    launchError_ = L"Could not update the search font. The previous font is still available.";
+    return;
+  }
+  TEXTMETRICW metrics{};
+  const HDC dc = GetDC(edit_);
+  const HGDIOBJ previous = dc ? SelectObject(dc, replacement) : nullptr;
+  const bool measured = previous && GetTextMetricsW(dc, &metrics);
+  if (previous) SelectObject(dc, previous);
+  if (dc) ReleaseDC(edit_, dc);
+  if (!measured) {
+    DeleteObject(replacement);
+    launchError_ = L"Could not measure the search font. The previous font is still available.";
+    return;
+  }
+  const int height = metrics.tmHeight + 2;
+  const int y = (ScaleForDpiInt(visuals::kSearchHeight, dpi_) - height) / 2;
+  SetWindowPos(edit_, nullptr, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+  const HFONT oldFont = editFont_;
+  editFont_ = replacement;
+  SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(replacement), TRUE);
+  if (oldFont) DeleteObject(oldFont);
   SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
 }
 
@@ -295,7 +336,8 @@ void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
   const bool hasMessage = !catalogError_.empty() || !launchError_.empty();
   const std::size_t visibleRows = VisibleResultRows();
   const float heightDip = ResultsTop() + static_cast<float>(visibleRows) * visuals::kResultHeight +
-                          visuals::kBottomPadding + (hasMessage ? visuals::kStatusHeight : 0.0f);
+                          visuals::kBottomPadding + visuals::kFooterHeight +
+                          (hasMessage ? visuals::kStatusHeight : 0.0f);
 
   if (chooseMonitor || anchorMonitor_ == nullptr) {
     HWND foreground = GetForegroundWindow();
@@ -343,13 +385,13 @@ void LauncherApp::AddTrayIcon() {
   icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   icon.uCallbackMessage = kMessageTray;
   icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-  wcscpy_s(icon.szTip, L"Application Quick Dial");
+  wcscpy_s(icon.szTip, L"Blade Launcher");
   trayIconAdded_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE ||
                    Shell_NotifyIconW(NIM_MODIFY, &icon) != FALSE;
   if (trayIconAdded_) {
     KillTimer(window_, kTrayRetryTimer);
   } else if (SetTimer(window_, kTrayRetryTimer, 2000, nullptr) == 0) {
-    launchError_ = L"Could not restore the tray icon. Restart Quick Dial when Explorer is available.";
+    launchError_ = L"Could not restore the tray icon. Restart Launcher when Explorer is available.";
   }
 }
 
@@ -378,9 +420,14 @@ void LauncherApp::ShowTrayMenu(bool atLauncher) {
   if (menu == nullptr) {
     return;
   }
-  AppendMenuW(menu, MF_STRING, kCommandOpen, L"Open Quick Dial");
+  AppendMenuW(menu, MF_STRING, kCommandOpen, L"Open Launcher");
   AppendMenuW(menu, MF_STRING, kCommandOpenCatalog, L"Open app list");
   AppendMenuW(menu, MF_STRING, kCommandReloadCatalog, L"Reload app list");
+  AppendMenuW(menu, MF_STRING, kCommandAddApplication, L"Add application…");
+  AppendMenuW(menu, MF_STRING, kCommandDiagnostics, L"Diagnostics");
+  AppendMenuW(menu, MF_STRING, kCommandAppearance, L"Appearance…");
+  AppendMenuW(menu, MF_STRING | (showMaintenance_ ? MF_CHECKED : MF_UNCHECKED),
+              kCommandMaintenance, L"Show maintenance entries");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   if (!shellMode_) {
     AppendMenuW(menu, MF_STRING | (IsStartWithWindowsEnabled() ? MF_CHECKED : MF_UNCHECKED),
@@ -396,6 +443,7 @@ void LauncherApp::ShowTrayMenu(bool atLauncher) {
     if (GetWindowRect(window_, &bounds)) point = {bounds.left, bounds.bottom};
   }
   SetForegroundWindow(window_);
+  blade_appearance_style_menu(menu);
   const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                                       point.x, point.y, 0, window_, nullptr);
   DestroyMenu(menu);
@@ -412,6 +460,19 @@ void LauncherApp::HandleTrayCommand(UINT command) {
       break;
     case kCommandOpenCatalog:
       OpenCatalog();
+      break;
+    case kCommandAddApplication:
+      AddApplication();
+      break;
+    case kCommandAppearance:
+      blade_appearance_edit();
+      break;
+    case kCommandDiagnostics:
+      OpenDiagnostics();
+      break;
+    case kCommandMaintenance:
+      showMaintenance_ = !showMaintenance_;
+      RebuildCatalog();
       break;
     case kCommandReloadCatalog:
       ++iconGeneration_;
@@ -430,7 +491,7 @@ void LauncherApp::HandleTrayCommand(UINT command) {
       } else if (!discoveryPending_) {
         notifyAfterDiscovery_ = false;
         if (catalogError_.empty()) {
-          ShowNotification(L"Application Quick Dial", L"The app list was reloaded.");
+          ShowNotification(L"Blade Launcher", L"The app list was reloaded.");
         } else {
           ShowNotification(L"Could not reload app list", catalogError_);
         }
@@ -440,7 +501,7 @@ void LauncherApp::HandleTrayCommand(UINT command) {
       std::wstring error;
       const bool enable = !IsStartWithWindowsEnabled();
       if (!SetStartWithWindowsEnabled(enable, error)) {
-        ShowNotification(L"Application Quick Dial", error);
+        ShowNotification(L"Blade Launcher", error);
       }
       break;
     }
@@ -454,8 +515,14 @@ void LauncherApp::HandleTrayCommand(UINT command) {
 
 void LauncherApp::ShowNotification(std::wstring_view title, std::wstring_view message) {
   if (!trayIconAdded_) {
-    ShowLauncher();
     launchError_ = std::wstring(title) + L": " + std::wstring(message);
+    // A background error must not reload settings, clear the query, or start
+    // another discovery merely because Explorer has no tray to display it.
+    if (!IsWindowVisible(window_)) {
+      ApplyTheme();
+      ResizeAndPosition(true);
+      ShowWindow(window_, SW_SHOWNORMAL);
+    }
     ResizeAndPosition(false);
     InvalidateRect(window_, nullptr, FALSE);
     return;
@@ -478,6 +545,9 @@ void LauncherApp::ShowLauncher() {
   launchError_.clear();
   anchorMonitor_ = nullptr;
   ReloadCatalog();
+  if (configuredCatalog_.discoverInstalled && !discoveryPending_ && !discoveryChangePending_ &&
+      refreshPolicy_.NeedsCatchUp(GetTickCount64(), !installedApplicationsError_.empty() ||
+          !installedApplicationsWatchError_.empty())) RequestInstalledApplications();
   ApplyTheme();
   SetWindowTextW(edit_, L"");
   UpdateResults();
@@ -539,12 +609,19 @@ void LauncherApp::ReloadCatalog(bool refreshInstalledApplications) {
 void LauncherApp::RebuildCatalog() {
   // Preserve selection and query if discovery completes while the user is typing.
   std::wstring selectedTarget;
-  const auto selectedMenuItem = IsMenuView() && selectedResult_ < menuItems_.size()
-      ? std::optional(menuItems_[selectedResult_]) : std::nullopt;
-  if (!IsMenuView() && selectedResult_ < results_.size() && results_[selectedResult_] < catalog_.applications.size()) {
-    selectedTarget = catalog_.applications[results_[selectedResult_]].target;
+  std::wstring selectedLaunchKey;
+  std::optional<std::wstring> selectedIdentity;
+  const auto selectedMenuItem = selectedResult_ < searchResults_.size() &&
+      searchResults_[selectedResult_].kind == LauncherResult::Kind::Command
+      ? std::optional(searchResults_[selectedResult_].command) : std::nullopt;
+  if (selectedResult_ < searchResults_.size() && searchResults_[selectedResult_].kind == LauncherResult::Kind::Application &&
+      searchResults_[selectedResult_].application < catalog_.applications.size()) {
+    const auto& selected = catalog_.applications[searchResults_[selectedResult_].application];
+    selectedTarget = selected.target;
+    selectedLaunchKey = selected.launchKey;
+    selectedIdentity = selected.identity;
   }
-  catalog_ = MergeInstalledApplications(configuredCatalog_, installedApplications_);
+  catalog_ = MergeInstalledApplications(configuredCatalog_, installedApplications_, showMaintenance_);
   catalogError_ = catalog_.discoverInstalled ?
       (installedApplicationsError_.empty() ? installedApplicationsWatchError_ : installedApplicationsError_) :
       std::wstring{};
@@ -552,16 +629,22 @@ void LauncherApp::RebuildCatalog() {
   iconAttempted_.clear();
   UpdateResults();
   if (selectedMenuItem) {
-    const auto item = std::find(menuItems_.begin(), menuItems_.end(), *selectedMenuItem);
-    if (item != menuItems_.end()) selectedResult_ = static_cast<std::size_t>(item - menuItems_.begin());
+    const auto item = std::find_if(searchResults_.begin(), searchResults_.end(), [&selectedMenuItem](const auto& result) {
+      return result.kind == LauncherResult::Kind::Command && result.command == *selectedMenuItem;
+    });
+    if (item != searchResults_.end()) selectedResult_ = static_cast<std::size_t>(item - searchResults_.begin());
   }
-  for (std::size_t index = 0; index < results_.size(); ++index) {
-    if (catalog_.applications[results_[index]].target == selectedTarget) {
+  for (std::size_t index = 0; index < searchResults_.size(); ++index) {
+    if (searchResults_[index].kind != LauncherResult::Kind::Application) continue;
+    const auto& candidate = catalog_.applications[searchResults_[index].application];
+    if (candidate.target == selectedTarget || (!selectedLaunchKey.empty() && candidate.launchKey == selectedLaunchKey) ||
+        (selectedIdentity && candidate.identity && FoldCase(*selectedIdentity) == FoldCase(*candidate.identity))) {
       selectedResult_ = index;
       EnsureSelectionVisible();
       break;
     }
   }
+  EnsureSelectionVisible();
 }
 
 void LauncherApp::UpdateInstalledApplicationsWatcher() {
@@ -569,15 +652,18 @@ void LauncherApp::UpdateInstalledApplicationsWatcher() {
   if (!hasValidCatalog_ || !configuredCatalog_.discoverInstalled) {
     KillTimer(window_, kInstalledApplicationsChangeTimer);
     discoveryChangePending_ = discoveryAgain_ = false;
+    KillTimer(window_, kInstalledApplicationsRetryTimer);
+    discoveryRetryPending_ = false;
+    refreshPolicy_.Reset();
     installedApplicationsWatchError_.clear();
     if (!installedAppsWatcher_->Stop()) {
-      installedApplicationsWatchError_ = L"Could not stop app-change notifications. Restart Quick Dial.";
+      installedApplicationsWatchError_ = L"Could not stop app-change notifications. Restart Launcher.";
     }
   } else {
     installedAppsWatcher_->Start(window_, kMessageInstalledApplicationsChanged, installedApplicationsWatchError_);
   }
   if (!installedApplicationsWatchError_.empty() && installedApplicationsWatchError_ != previousError) {
-    ShowNotification(L"Application Quick Dial", installedApplicationsWatchError_);
+    ShowNotification(L"Blade Launcher", installedApplicationsWatchError_);
   }
 }
 
@@ -585,9 +671,12 @@ void LauncherApp::ScheduleInstalledApplicationsRefresh() {
   if (!hasValidCatalog_ || !configuredCatalog_.discoverInstalled) return;
   discoveryChangePending_ = true;
   // A one-shot debounce after an event, never a periodic app-list poll.
-  if (SetTimer(window_, kInstalledApplicationsChangeTimer, kInstalledApplicationsDebounceMs, nullptr) == 0) {
-    installedApplicationsWatchError_ = L"Could not delay an app-list refresh. Restart Quick Dial.";
-    ShowNotification(L"Application Quick Dial", installedApplicationsWatchError_);
+  KillTimer(window_, kInstalledApplicationsRetryTimer);
+  discoveryRetryPending_ = false;
+  const auto delay = refreshPolicy_.Changed(GetTickCount64());
+  if (SetTimer(window_, kInstalledApplicationsChangeTimer, static_cast<UINT>(delay), nullptr) == 0) {
+    installedApplicationsWatchError_ = L"Could not delay an app-list refresh. Restart Launcher.";
+    ShowNotification(L"Blade Launcher", installedApplicationsWatchError_);
     RefreshChangedInstalledApplications();
   }
 }
@@ -596,10 +685,9 @@ void LauncherApp::HandleInstalledApplicationsDirectoryChange(std::size_t index) 
   std::wstring error;
   const bool changed = installedAppsWatcher_->ConsumeDirectoryChange(index, error);
   if (!error.empty()) {
-    if (!installedAppsWatcher_->Stop()) error += L" Notification cleanup failed; restart Quick Dial.";
     installedApplicationsWatchError_ = error;
     if (catalogFileError_.empty()) RebuildCatalog();
-    ShowNotification(L"Application Quick Dial", error);
+    ShowNotification(L"Blade Launcher", error);
   }
   if (changed || !error.empty()) ScheduleInstalledApplicationsRefresh();
 }
@@ -612,6 +700,9 @@ void LauncherApp::RefreshChangedInstalledApplications() {
 }
 
 void LauncherApp::RequestInstalledApplications() {
+  KillTimer(window_, kInstalledApplicationsRetryTimer);
+  discoveryRetryPending_ = false;
+  refreshPolicy_.Begin();
   discoveryRequested_ = true;
   discoveryPending_ = discoveryTasks_->Submit(
       [this, cancellation = discoveryCancellation_.get_token()]() -> BackgroundTasks::Completion {
@@ -633,17 +724,29 @@ void LauncherApp::ApplyInstalledApplications(InstalledAppsResult installed) {
   discoveryPending_ = false;
   const std::wstring previousError = installedApplicationsError_;
   bool changed = false;
+  sourceStatus_ = installed.sources;
   if (installed) {
-    changed = installed.applications.size() != installedApplications_.size() ||
-        !std::equal(installed.applications.begin(), installed.applications.end(), installedApplications_.begin(),
+    auto reconciled = ReconcileDiscoverySources(installedApplications_, installed);
+    changed = reconciled.size() != installedApplications_.size() ||
+        !std::equal(reconciled.begin(), reconciled.end(), installedApplications_.begin(),
             [](const ApplicationEntry& left, const ApplicationEntry& right) {
-              return left.name == right.name && left.target == right.target && left.identity == right.identity;
+              return left.name == right.name && left.target == right.target && left.identity == right.identity &&
+                     left.source == right.source && left.resolvedTarget == right.resolvedTarget &&
+                     left.shortcutArguments == right.shortcutArguments &&
+                     left.shortcutWorkingDirectory == right.shortcutWorkingDirectory && left.launchKey == right.launchKey;
             });
-    installedApplications_ = std::move(installed.applications);
+    installedApplications_ = std::move(reconciled);
     installedApplicationsError_.clear();
+    for (const auto& source : sourceStatus_) if (!source.succeeded) {
+      if (!installedApplicationsError_.empty()) installedApplicationsError_ += L" ";
+      installedApplicationsError_ += std::wstring(ApplicationSourceName(source.source)) +
+          L" is stale: " + source.error;
+    }
+    if (installedApplicationsError_.empty()) lastRefreshTick_ = GetTickCount64();
   } else {
     installedApplicationsError_ = std::move(installed.error);
   }
+  const auto retry = refreshPolicy_.Completed(GetTickCount64(), installedApplicationsError_.empty());
   if (catalogFileError_.empty() && (changed || previousError != installedApplicationsError_)) {
     RebuildCatalog();
   }
@@ -652,17 +755,25 @@ void LauncherApp::ApplyInstalledApplications(InstalledAppsResult installed) {
     RequestInstalledApplications();
   } else if (notifyAfterDiscovery_) {
     notifyAfterDiscovery_ = false;
-    ShowNotification(L"Application Quick Dial",
+    ShowNotification(L"Blade Launcher",
                      catalogError_.empty() ? L"The app list was reloaded." : catalogError_);
   } else if (!installedApplicationsError_.empty() && installedApplicationsError_ != previousError &&
              configuredCatalog_.discoverInstalled) {
     ShowNotification(L"Could not discover installed apps", installedApplicationsError_);
   }
+  if (!refreshAgain && retry && configuredCatalog_.discoverInstalled) {
+    discoveryRetryPending_ = SetTimer(window_, kInstalledApplicationsRetryTimer,
+        static_cast<UINT>(*retry), nullptr) != 0;
+    if (!discoveryRetryPending_) {
+      installedApplicationsWatchError_ = L"Could not schedule a refresh retry. Use Reload app list.";
+      if (catalogFileError_.empty()) RebuildCatalog();
+    }
+  }
 }
 
 void LauncherApp::StartBackgroundTimer() {
   if (SetTimer(window_, kBackgroundTimer, 100, nullptr) == 0) {
-    launchError_ = L"Could not monitor background work. Try reopening Quick Dial.";
+    launchError_ = L"Could not monitor background work. Try reopening Launcher.";
   }
 }
 
@@ -682,7 +793,7 @@ void LauncherApp::ProcessBackgroundResults() {
     iconCache_.clear();
     iconAttempted_.clear();
     launchError_ = L"Some icons could not be loaded. Try Reload app list.";
-    ShowNotification(L"Application Quick Dial", launchError_);
+    ShowNotification(L"Blade Launcher", launchError_);
     if (IsWindowVisible(window_)) {
       ResizeAndPosition(false);
       InvalidateRect(window_, nullptr, FALSE);
@@ -696,7 +807,7 @@ void LauncherApp::ProcessBackgroundResults() {
 void LauncherApp::StopBackgroundTasks() {
   discoveryChangePending_ = false;
   if (installedAppsWatcher_ && !installedAppsWatcher_->Stop()) {
-    OutputDebugStringW(L"Quick Dial: could not stop app-change notifications during shutdown.\n");
+    OutputDebugStringW(L"Launcher: could not stop app-change notifications during shutdown.\n");
   }
   discoveryCancellation_.request_stop();
   if (iconTasks_) iconTasks_->Stop();
@@ -705,6 +816,8 @@ void LauncherApp::StopBackgroundTasks() {
     KillTimer(window_, kBackgroundTimer);
     KillTimer(window_, kTrayRetryTimer);
     KillTimer(window_, kInstalledApplicationsChangeTimer);
+    KillTimer(window_, kInstalledApplicationsRetryTimer);
+    discoveryRetryPending_ = false;
   }
 }
 
@@ -720,6 +833,7 @@ void LauncherApp::UpdateResults() {
   results_ = menuPage_ == MenuPage::Main && hasValidCatalog_
       ? RankApplications(catalog_, query) : std::vector<std::size_t>{};
   menuItems_ = MenuItems(menuPage_, query);
+  searchResults_ = RankLauncherResults(hasValidCatalog_ ? catalog_ : Catalog{}, menuPage_, query);
   selectedResult_ = 0;
   firstVisibleResult_ = 0;
   wheelRemainder_ = 0;
@@ -741,7 +855,7 @@ void LauncherApp::MoveSelection(int delta) {
 
 void LauncherApp::UpdateSearchHint() {
   const wchar_t* hint = menuPage_ == MenuPage::System ? L"Search system actions" :
-      (shellMode_ ? L"Search applications (F10: menu)" : L"Search applications");
+      L"Search applications";
   SendMessageW(edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(hint));
 }
 
@@ -750,7 +864,7 @@ bool LauncherApp::IsMenuView() const {
 }
 
 std::size_t LauncherApp::ResultCount() const {
-  return IsMenuView() ? menuItems_.size() : results_.size();
+  return searchResults_.size();
 }
 
 float LauncherApp::ResultsTop() const {
@@ -812,15 +926,18 @@ std::optional<std::size_t> LauncherApp::ResultAtY(float y) const {
 
 void LauncherApp::LaunchSelection() {
   if (pendingLaunch_ || pendingPowerAction_ || powerActionActive_) return;
-  if (IsMenuView()) {
-    if (selectedResult_ >= menuItems_.size()) return;
-    const MenuItemId item = menuItems_[selectedResult_];
+  if (selectedResult_ >= searchResults_.size()) return;
+  const auto selected = searchResults_[selectedResult_];
+  if (selected.kind == LauncherResult::Kind::Command) {
+    const MenuItemId item = selected.command;
     if (item == MenuItemId::System) {
       menuPage_ = MenuPage::System;
       launchError_.clear();
       UpdateSearchHint();
       UpdateResults();
       SetFocus(edit_);
+    } else if(item==MenuItemId::Appearance) {
+      blade_appearance_edit();
     } else {
       pendingPowerAction_ = item;
       if (PostMessageW(window_, kMessageSystemPowerAction, 0, 0)) return;
@@ -831,10 +948,7 @@ void LauncherApp::LaunchSelection() {
     }
     return;
   }
-  if (results_.empty() || selectedResult_ >= results_.size()) {
-    return;
-  }
-  const std::size_t applicationIndex = results_[selectedResult_];
+  const std::size_t applicationIndex = selected.application;
   if (applicationIndex >= catalog_.applications.size()) {
     return;
   }
@@ -947,13 +1061,157 @@ bool LauncherApp::LaunchApplication(const ApplicationEntry& application, std::ws
 void LauncherApp::OpenCatalog() {
   std::wstring error;
   if (!EnsureDefaultCatalog(catalogPath_, error)) {
-    ShowNotification(L"Application Quick Dial", error);
+    ShowNotification(L"Blade Launcher", error);
     return;
   }
   if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", catalogPath_.c_str(), nullptr,
                                               catalogPath_.parent_path().c_str(), SW_SHOWNORMAL)) <= 32) {
-    ShowNotification(L"Application Quick Dial", L"Could not open the app list.");
+    ShowNotification(L"Blade Launcher", L"Could not open the app list.");
   }
+}
+
+void LauncherApp::AddApplication() {
+  if (IsPackagedProcess()) {
+    ShowNotification(L"Add application", L"Run Register-LauncherApp.ps1 from your Windows account to verify the catalog.");
+    return;
+  }
+  ComPtr<IFileOpenDialog> dialog;
+  const auto fail = [this](HRESULT result) {
+    if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return;
+    ShowNotification(L"Could not add application", winrt::hresult_error(result).message().c_str());
+  };
+  HRESULT result = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+      IID_PPV_ARGS(dialog.ReleaseAndGetAddressOf()));
+  if (FAILED(result)) { fail(result); return; }
+  result = dialog->SetTitle(L"Add application to Launcher");
+  if (FAILED(result)) { fail(result); return; }
+  const COMDLG_FILTERSPEC filters[] = {{L"Applications and shortcuts", L"*.exe;*.lnk;*.url;*.appref-ms"},
+                                      {L"All files", L"*.*"}};
+  result = dialog->SetFileTypes(2, filters);
+  if (SUCCEEDED(result)) result = dialog->SetOptions(FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_NODEREFERENCELINKS);
+  if (SUCCEEDED(result)) result = dialog->Show(window_);
+  if (FAILED(result)) { fail(result); return; }
+  ComPtr<IShellItem> item;
+  PWSTR selected = nullptr;
+  result = dialog->GetResult(item.ReleaseAndGetAddressOf());
+  if (SUCCEEDED(result)) result = item->GetDisplayName(SIGDN_FILESYSPATH, &selected);
+  if (FAILED(result)) { fail(result); return; }
+  const std::filesystem::path target(selected);
+  CoTaskMemFree(selected);
+  using namespace winrt::Windows::Data::Json;
+  JsonObject entry;
+  entry.SetNamedValue(L"id", JsonValue::CreateStringValue(L"manual:" + FoldCase(target.wstring())));
+  entry.SetNamedValue(L"name", JsonValue::CreateStringValue(target.stem().wstring()));
+  entry.SetNamedValue(L"target", JsonValue::CreateStringValue(target.wstring()));
+  const auto registration = RegisterApplicationJson(catalogPath_, entry.Stringify().c_str());
+  if (!registration.success) { ShowNotification(L"Could not add application", registration.error); return; }
+  ShowLauncher();
+  SetWindowTextW(edit_, target.stem().c_str());
+  UpdateResults();
+}
+
+std::wstring LauncherApp::DiagnosticReport(std::wstring_view lookup) const {
+  using namespace winrt::Windows::Data::Json;
+  JsonObject root;
+  const auto string = [](std::wstring_view value) { return JsonValue::CreateStringValue(value); };
+  root.SetNamedValue(L"success", JsonValue::CreateBooleanValue(true));
+  root.SetNamedValue(L"product", string(L"Blade Launcher"));
+  for(int attempt=0;attempt<5;++attempt) {
+    std::string bytes(blade_appearance_json(nullptr,0),'\0');
+    if(bytes.size()>512*1024) break;
+    const auto actual=blade_appearance_json(bytes.data(),bytes.size());
+    if(!actual || actual>bytes.size()) continue;
+    bytes.resize(actual-1);JsonObject appearance;
+    if(JsonObject::TryParse(winrt::to_hstring(bytes),appearance)) {
+      appearance.Remove(L"themeData");root.SetNamedValue(L"appearance",appearance);
+    }
+    break;
+  }
+  root.SetNamedValue(L"version", JsonValue::CreateStringValue(winrt::to_hstring(BLADE_LAUNCHER_VERSION)));
+  wchar_t executable[32768]{};
+  GetModuleFileNameW(nullptr, executable, 32768);
+  root.SetNamedValue(L"executable", string(executable));
+  root.SetNamedValue(L"processId", JsonValue::CreateNumberValue(GetCurrentProcessId()));
+  root.SetNamedValue(L"visible", JsonValue::CreateBooleanValue(IsWindowVisible(window_) != FALSE));
+  const auto queryLength = GetWindowTextLengthW(edit_);
+  std::wstring query(static_cast<std::size_t>(queryLength) + 1, L'\0');
+  GetWindowTextW(edit_, query.data(), queryLength + 1);
+  query.resize(static_cast<std::size_t>(queryLength));
+  root.SetNamedValue(L"query", string(query));
+  root.SetNamedValue(L"selectedResult", JsonValue::CreateNumberValue(static_cast<double>(selectedResult_)));
+  root.SetNamedValue(L"catalogPath", string(catalogPath_.wstring()));
+  root.SetNamedValue(L"account", string(CurrentAccountSid()));
+  root.SetNamedValue(L"discoverInstalled", JsonValue::CreateBooleanValue(configuredCatalog_.discoverInstalled));
+  root.SetNamedValue(L"catalogError", string(catalogFileError_));
+  root.SetNamedValue(L"discoveryError", string(installedApplicationsError_));
+  root.SetNamedValue(L"watchError", string(installedApplicationsWatchError_));
+  root.SetNamedValue(L"discoveryPending", JsonValue::CreateBooleanValue(discoveryPending_));
+  root.SetNamedValue(L"refreshScheduled", JsonValue::CreateBooleanValue(discoveryChangePending_ || discoveryRetryPending_ || discoveryAgain_));
+  root.SetNamedValue(L"lastHealthyRefreshAgeMs", lastRefreshTick_ ?
+      JsonValue::CreateNumberValue(static_cast<double>(GetTickCount64() - lastRefreshTick_)) : JsonValue::CreateNullValue());
+  JsonArray sources;
+  for (const auto& source : sourceStatus_) {
+    JsonObject item;
+    item.SetNamedValue(L"name", string(ApplicationSourceName(source.source)));
+    item.SetNamedValue(L"healthy", JsonValue::CreateBooleanValue(source.succeeded));
+    item.SetNamedValue(L"skippedEntries", JsonValue::CreateNumberValue(source.skipped));
+    item.SetNamedValue(L"error", string(source.error));
+    sources.Append(item);
+  }
+  root.SetNamedValue(L"sources", sources);
+  const auto folded = FoldCase(lookup);
+  JsonArray entries;
+  const auto add = [&](const ApplicationEntry& app) {
+    if (!folded.empty() && FoldCase(app.name + L" " + app.target + L" " + app.identity.value_or(L"")).find(folded) == std::wstring::npos &&
+        std::none_of(app.aliases.begin(), app.aliases.end(), [&](const auto& alias) { return FoldCase(alias).find(folded) != std::wstring::npos; })) return;
+    JsonObject item;
+    item.SetNamedValue(L"name", string(app.name));
+    item.SetNamedValue(L"target", string(app.target));
+    item.SetNamedValue(L"id", string(app.identity.value_or(L"")));
+    item.SetNamedValue(L"source", string(ApplicationSourceName(app.source)));
+    item.SetNamedValue(L"resolvedTarget", string(app.resolvedTarget));
+    item.SetNamedValue(L"shortcutArguments", string(app.shortcutArguments));
+    item.SetNamedValue(L"shortcutWorkingDirectory", string(app.shortcutWorkingDirectory));
+    JsonArray args;
+    for (const auto& argument : app.arguments) args.Append(string(argument));
+    item.SetNamedValue(L"arguments", args);
+    item.SetNamedValue(L"workingDirectory", string(app.workingDirectory.value_or(L"")));
+    item.SetNamedValue(L"icon", string(app.icon.value_or(L"")));
+    std::wstring reason;
+    if (app.source == ApplicationSource::Manual) reason = L"Included: manual registration";
+    else if (!configuredCatalog_.discoverInstalled) reason = L"Excluded: discovery disabled";
+    else if (MatchesApplication(app, configuredCatalog_.hiddenApplications)) reason = L"Excluded: hiddenApplications";
+    else if (!showMaintenance_ && IsMaintenanceApplication(app) && !MatchesApplication(app, configuredCatalog_.includedApplications)) reason = L"Excluded: maintenance entry";
+    else if (std::none_of(catalog_.applications.begin(), catalog_.applications.end(), [&](const auto& visible) { return visible.target == app.target; })) reason = L"Excluded: duplicate launch identity";
+    else reason = L"Included";
+    item.SetNamedValue(L"reason", string(reason));
+    entries.Append(item);
+  };
+  for (const auto& app : configuredCatalog_.applications) add(app);
+  for (const auto& app : installedApplications_) add(app);
+  root.SetNamedValue(L"entries", entries);
+  root.SetNamedValue(L"lookup", string(lookup));
+  JsonArray results;
+  for (const auto& result : searchResults_) {
+    JsonObject item;
+    const bool command = result.kind == LauncherResult::Kind::Command;
+    item.SetNamedValue(L"kind", string(command ? L"command" : L"application"));
+    item.SetNamedValue(L"label", string(command ? MenuItemLabel(result.command) : catalog_.applications[result.application].name));
+    results.Append(item);
+  }
+  root.SetNamedValue(L"results", results);
+  return root.Stringify().c_str();
+}
+
+void LauncherApp::OpenDiagnostics() {
+  wchar_t temporary[MAX_PATH]{};
+  if (!GetTempPathW(MAX_PATH, temporary)) return;
+  const auto path = std::filesystem::path(temporary) / (L"Blade-Launcher-diagnostics-" + std::to_wstring(GetCurrentProcessId()) + L".json");
+  const auto report = winrt::to_string(winrt::hstring(DiagnosticReport()));
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  file.write(report.data(), static_cast<std::streamsize>(report.size()));
+  file.close();
+  ShellExecuteW(window_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 HRESULT LauncherApp::EnsureRenderTarget() {
@@ -989,6 +1247,20 @@ void LauncherApp::Render() {
     return;
   }
 
+  renderTarget_->BeginDraw();
+  DrawContent(renderTarget_.Get(),true);
+
+  const HRESULT result = renderTarget_->EndDraw();
+  if (result == D2DERR_RECREATE_TARGET) {
+    ReleaseDeviceResources();
+  } else if (SUCCEEDED(result) && benchmarkPresentedEvent_ != nullptr) {
+    SetEvent(benchmarkPresentedEvent_);
+  }
+  EndPaint(window_, &paint);
+}
+
+// The HWND and bounded software capture use the same drawing path.
+void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) {
   const visuals::Palette palette = visuals::GetPalette(lightTheme_);
 
   ComPtr<ID2D1SolidColorBrush> backgroundBrush;
@@ -997,138 +1269,101 @@ void LauncherApp::Render() {
   ComPtr<ID2D1SolidColorBrush> selectedBrush;
   ComPtr<ID2D1SolidColorBrush> separatorBrush;
   ComPtr<ID2D1SolidColorBrush> errorBrush;
-  renderTarget_->CreateSolidColorBrush(palette.background, &backgroundBrush);
-  renderTarget_->CreateSolidColorBrush(palette.text, &textBrush);
-  renderTarget_->CreateSolidColorBrush(palette.muted, &mutedBrush);
-  renderTarget_->CreateSolidColorBrush(palette.selected, &selectedBrush);
-  renderTarget_->CreateSolidColorBrush(palette.separator, &separatorBrush);
-  renderTarget_->CreateSolidColorBrush(palette.error, &errorBrush);
+  target->CreateSolidColorBrush(palette.background, &backgroundBrush);
+  target->CreateSolidColorBrush(palette.text, &textBrush);
+  target->CreateSolidColorBrush(palette.muted, &mutedBrush);
+  target->CreateSolidColorBrush(palette.selected, &selectedBrush);
+  target->CreateSolidColorBrush(palette.separator, &separatorBrush);
+  target->CreateSolidColorBrush(palette.error, &errorBrush);
 
-  renderTarget_->BeginDraw();
-  renderTarget_->Clear(palette.background);
+  target->Clear(palette.background);
 
-  renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(28.0f, 29.0f), 7.0f, 7.0f), mutedBrush.Get(), 1.75f);
-  renderTarget_->DrawLine(D2D1::Point2F(33.0f, 34.0f), D2D1::Point2F(39.0f, 40.0f), mutedBrush.Get(), 1.75f);
-  renderTarget_->DrawLine(D2D1::Point2F(16.0f, visuals::kSearchHeight),
+  const float searchCenter = visuals::kSearchHeight / 2.0f;
+  target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(25.0f, searchCenter - 2.0f), 6.0f, 6.0f), mutedBrush.Get(), 1.5f);
+  target->DrawLine(D2D1::Point2F(29.0f, searchCenter + 2.0f), D2D1::Point2F(34.0f, searchCenter + 7.0f), mutedBrush.Get(), 1.5f);
+  const float escapeLeft = visuals::kWindowWidth - 46.0f;
+  target->DrawRoundedRectangle(D2D1::RoundedRect(
+      D2D1::RectF(escapeLeft, searchCenter - 10.0f, visuals::kWindowWidth - 18.0f, searchCenter + 10.0f),
+      4.0f, 4.0f), separatorBrush.Get(), 1.0f);
+  target->DrawTextW(L"esc", 3, hintTextFormat_.Get(),
+      D2D1::RectF(escapeLeft + 6.0f, searchCenter - 10.0f, visuals::kWindowWidth - 20.0f, searchCenter + 10.0f),
+      mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  target->DrawLine(D2D1::Point2F(16.0f, visuals::kSearchHeight),
                           D2D1::Point2F(visuals::kWindowWidth - 16.0f, visuals::kSearchHeight),
                           separatorBrush.Get(), 1.0f);
 
   if (menuPage_ != MenuPage::Main) {
     const float center = visuals::kSearchHeight + visuals::kMenuHeaderHeight / 2.0f;
-    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(39.0f, center), textBrush.Get(), 1.75f);
-    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center - 6.0f), textBrush.Get(), 1.75f);
-    renderTarget_->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center + 6.0f), textBrush.Get(), 1.75f);
+    target->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(39.0f, center), textBrush.Get(), 1.75f);
+    target->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center - 6.0f), textBrush.Get(), 1.75f);
+    target->DrawLine(D2D1::Point2F(24.0f, center), D2D1::Point2F(30.0f, center + 6.0f), textBrush.Get(), 1.75f);
     constexpr std::wstring_view title = L"System";
-    renderTarget_->DrawTextW(title.data(), static_cast<UINT32>(title.size()), resultTextFormat_.Get(),
+    target->DrawTextW(title.data(), static_cast<UINT32>(title.size()), resultTextFormat_.Get(),
         D2D1::RectF(visuals::kResultTextLeft, visuals::kSearchHeight,
             visuals::kWindowWidth - visuals::kContentRight, ResultsTop()), mutedBrush.Get());
   }
 
-  if (IsMenuView()) {
-    for (std::size_t index = 0; index < menuItems_.size(); ++index) {
-      const float top = ResultsTop() + static_cast<float>(index) * visuals::kResultHeight;
-      if (index == selectedResult_) {
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(
-            D2D1::RectF(visuals::kSelectionHorizontalInset, top + visuals::kSelectionVerticalInset,
-                visuals::kWindowWidth - visuals::kSelectionHorizontalInset,
-                top + visuals::kResultHeight - visuals::kSelectionVerticalInset),
-            visuals::kSelectionCornerRadius, visuals::kSelectionCornerRadius), selectedBrush.Get());
-      }
-      const auto item = menuItems_[index];
-      const float center = top + visuals::kResultHeight / 2.0f;
-      if (item == MenuItemId::System) {
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(
-            D2D1::RectF(20.0f, center - 10.0f, 43.0f, center + 5.0f), 2.0f, 2.0f), mutedBrush.Get(), 1.5f);
-        renderTarget_->DrawLine(D2D1::Point2F(31.5f, center + 5.0f), D2D1::Point2F(31.5f, center + 10.0f), mutedBrush.Get(), 1.5f);
-        renderTarget_->DrawLine(D2D1::Point2F(26.0f, center + 10.0f), D2D1::Point2F(37.0f, center + 10.0f), mutedBrush.Get(), 1.5f);
-        const float right = visuals::kWindowWidth - 28.0f;
-        renderTarget_->DrawLine(D2D1::Point2F(right - 5.0f, center - 5.0f), D2D1::Point2F(right, center), mutedBrush.Get(), 1.5f);
-        renderTarget_->DrawLine(D2D1::Point2F(right, center), D2D1::Point2F(right - 5.0f, center + 5.0f), mutedBrush.Get(), 1.5f);
-      } else if (item == MenuItemId::SignOut) {
-        renderTarget_->DrawRectangle(D2D1::RectF(21.0f, center - 10.0f, 33.0f, center + 10.0f), mutedBrush.Get(), 1.5f);
-        renderTarget_->DrawLine(D2D1::Point2F(29.0f, center), D2D1::Point2F(44.0f, center), textBrush.Get(), 1.75f);
-        renderTarget_->DrawLine(D2D1::Point2F(38.0f, center - 5.0f), D2D1::Point2F(44.0f, center), textBrush.Get(), 1.75f);
-        renderTarget_->DrawLine(D2D1::Point2F(44.0f, center), D2D1::Point2F(38.0f, center + 5.0f), textBrush.Get(), 1.75f);
-      } else {
-        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(32.0f, center), 10.0f, 10.0f), mutedBrush.Get(), 1.75f);
-        if (item == MenuItemId::ShutDown) {
-          renderTarget_->FillRectangle(D2D1::RectF(28.0f, center - 13.0f, 36.0f, center - 5.0f),
-              index == selectedResult_ ? selectedBrush.Get() : backgroundBrush.Get());
-          renderTarget_->DrawLine(D2D1::Point2F(32.0f, center - 13.0f), D2D1::Point2F(32.0f, center - 2.0f), textBrush.Get(), 1.75f);
-        } else {
-          renderTarget_->DrawLine(D2D1::Point2F(42.0f, center - 10.0f), D2D1::Point2F(42.0f, center - 1.0f), textBrush.Get(), 1.75f);
-          renderTarget_->DrawLine(D2D1::Point2F(42.0f, center - 1.0f), D2D1::Point2F(34.0f, center - 1.0f), textBrush.Get(), 1.75f);
-        }
-      }
-      const auto label = MenuItemLabel(item);
-      renderTarget_->DrawTextW(label.data(), static_cast<UINT32>(label.size()), resultTextFormat_.Get(),
-          D2D1::RectF(visuals::kResultTextLeft, top, visuals::kWindowWidth - visuals::kContentRight,
-              top + visuals::kResultHeight), textBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    }
-    if (menuItems_.empty()) {
-      constexpr std::wstring_view message = L"No matching system actions";
-      renderTarget_->DrawTextW(message.data(), static_cast<UINT32>(message.size()), messageTextFormat_.Get(),
-          D2D1::RectF(visuals::kContentRight, ResultsTop(), visuals::kWindowWidth - visuals::kContentRight,
-              ResultsTop() + visuals::kResultHeight), mutedBrush.Get());
-    }
-  } else if (results_.empty() && queryHasText_) {
-    const std::wstring message = !hasValidCatalog_
-                                     ? L"App list unavailable — use the tray menu to open it"
-                                     : (catalog_.applications.empty() ? L"No applications configured" : L"No matching applications");
-    const D2D1_RECT_F bounds = D2D1::RectF(visuals::kContentRight, visuals::kSearchHeight,
-                                           visuals::kWindowWidth - visuals::kContentRight,
-                                           visuals::kSearchHeight + visuals::kResultHeight);
-    renderTarget_->DrawTextW(message.c_str(), static_cast<UINT32>(message.size()), messageTextFormat_.Get(),
-                             bounds, mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  if (searchResults_.empty()) {
+    const std::wstring message = !hasValidCatalog_ && menuPage_ == MenuPage::Main
+        ? L"App list unavailable — F10 opens the menu"
+        : L"No matches — F10: Reload app list or Add application";
+    target->DrawTextW(message.c_str(), static_cast<UINT32>(message.size()), messageTextFormat_.Get(),
+        D2D1::RectF(visuals::kContentRight, ResultsTop(), visuals::kWindowWidth-visuals::kContentRight,
+            ResultsTop()+visuals::kResultHeight), mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
   } else {
-    for (std::size_t resultIndex = firstVisibleResult_; resultIndex < std::min(results_.size(), firstVisibleResult_ + kMaximumVisibleResults); ++resultIndex) {
-      const float top = visuals::kSearchHeight + static_cast<float>(resultIndex - firstVisibleResult_) * visuals::kResultHeight;
-      if (resultIndex == selectedResult_) {
-        renderTarget_->FillRoundedRectangle(
-            D2D1::RoundedRect(
-                D2D1::RectF(visuals::kSelectionHorizontalInset, top + visuals::kSelectionVerticalInset,
-                            visuals::kWindowWidth - visuals::kSelectionHorizontalInset,
-                            top + visuals::kResultHeight - visuals::kSelectionVerticalInset),
-                visuals::kSelectionCornerRadius, visuals::kSelectionCornerRadius),
-            selectedBrush.Get());
+    for (std::size_t index = firstVisibleResult_; index < std::min(searchResults_.size(), firstVisibleResult_+kMaximumVisibleResults); ++index) {
+      const float top = ResultsTop()+static_cast<float>(index-firstVisibleResult_)*visuals::kResultHeight;
+      if (index == selectedResult_) {
+        target->FillRoundedRectangle(D2D1::RoundedRect(
+          D2D1::RectF(visuals::kSelectionHorizontalInset,top+visuals::kSelectionVerticalInset,
+              visuals::kWindowWidth-visuals::kSelectionHorizontalInset,top+visuals::kResultHeight-visuals::kSelectionVerticalInset),
+          visuals::kSelectionCornerRadius,visuals::kSelectionCornerRadius),selectedBrush.Get());
+        target->FillRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(visuals::kSelectionHorizontalInset, top + 14.0f,
+                visuals::kSelectionHorizontalInset + 2.0f, top + visuals::kResultHeight - 14.0f),
+            1.0f, 1.0f), textBrush.Get());
       }
-
-      const std::size_t applicationIndex = results_[resultIndex];
-      if (applicationIndex >= catalog_.applications.size()) {
-        continue;
-      }
-      const ApplicationEntry& application = catalog_.applications[applicationIndex];
-      const auto icon = GetApplicationIcon(applicationIndex);
-      const float iconTop = top + (visuals::kResultHeight - visuals::kApplicationIconSize) / 2.0f;
-      const D2D1_RECT_F iconBounds = D2D1::RectF(
-          visuals::kApplicationIconLeft, iconTop,
-          visuals::kApplicationIconLeft + visuals::kApplicationIconSize,
-          iconTop + visuals::kApplicationIconSize);
-      if (icon) {
-        // Preserve the source proportions and place every edge on a physical
-        // pixel, including at fractional monitor scales such as 125% and 150%.
-        const auto pixels = icon->GetPixelSize();
-        const float slot = static_cast<float>(ScaleForDpiInt(visuals::kApplicationIconSize, dpi_));
-        const float scale = slot / static_cast<float>(std::max(pixels.width, pixels.height));
-        const float width = std::max(1.0f, std::round(pixels.width * scale));
-        const float height = std::max(1.0f, std::round(pixels.height * scale));
-        const float left = std::round(ScaleForDpi(iconBounds.left, dpi_) + (slot - width) / 2.0f);
-        const float topPixel = std::round(ScaleForDpi(iconBounds.top, dpi_) + (slot - height) / 2.0f);
-        const float dipPerPixel = 96.0f / static_cast<float>(dpi_);
-        const auto imageBounds = D2D1::RectF(left * dipPerPixel, topPixel * dipPerPixel,
-            (left + width) * dipPerPixel, (topPixel + height) * dipPerPixel);
-        renderTarget_->DrawBitmap(icon.Get(), imageBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+      textBrush->SetColor(index==selectedResult_ ? palette.selectedText : palette.text);
+      mutedBrush->SetColor(index==selectedResult_ ? palette.selectedText : palette.muted);
+      const auto result = searchResults_[index];
+      std::wstring_view label;
+      const float center = top+visuals::kResultHeight/2;
+      if (result.kind == LauncherResult::Kind::Command) {
+        label = MenuItemLabel(result.command);
+        DrawSystemIcon(*d2dFactory_.Get(),*target,result.command,D2D1::Point2F(28,center),*mutedBrush.Get(),dpi_);
+        const bool navigation = result.command == MenuItemId::System || result.command == MenuItemId::Appearance;
+        const std::wstring_view badge = navigation ? L"›" : L"System action";
+        target->DrawTextW(badge.data(),static_cast<UINT32>(badge.size()),messageTextFormat_.Get(),
+            D2D1::RectF(visuals::kWindowWidth-(navigation ? 26.0f : 110.0f),top,
+                visuals::kWindowWidth-visuals::kContentRight,top+visuals::kResultHeight),
+            mutedBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
       } else {
-        renderTarget_->DrawRoundedRectangle(
-            D2D1::RoundedRect(iconBounds, visuals::kSelectionCornerRadius, visuals::kSelectionCornerRadius),
-            mutedBrush.Get(), 1.5f);
+        if (result.application >= catalog_.applications.size()) continue;
+        label = catalog_.applications[result.application].name;
+        const auto icon = applicationIcons ? GetApplicationIcon(result.application) : ComPtr<ID2D1Bitmap>{};
+        const float iconTop = top+(visuals::kResultHeight-visuals::kApplicationIconSize)/2;
+        const auto bounds = D2D1::RectF(visuals::kApplicationIconLeft,iconTop,
+            visuals::kApplicationIconLeft+visuals::kApplicationIconSize,iconTop+visuals::kApplicationIconSize);
+        if (icon) {
+          const auto pixels = icon->GetPixelSize();
+          const float slot = static_cast<float>(ScaleForDpiInt(visuals::kApplicationIconSize,dpi_));
+          const float scale = slot/static_cast<float>(std::max(pixels.width,pixels.height));
+          const float width = std::max(1.0f,std::round(pixels.width*scale));
+          const float height = std::max(1.0f,std::round(pixels.height*scale));
+          const float left = std::round(ScaleForDpi(bounds.left,dpi_)+(slot-width)/2);
+          const float topPixel = std::round(ScaleForDpi(bounds.top,dpi_)+(slot-height)/2);
+          const float dipPerPixel = 96.0f/static_cast<float>(dpi_);
+          target->DrawBitmap(icon.Get(),D2D1::RectF(left*dipPerPixel,topPixel*dipPerPixel,
+              (left+width)*dipPerPixel,(topPixel+height)*dipPerPixel),1,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else target->DrawRoundedRectangle(D2D1::RoundedRect(bounds,
+            visuals::kSelectionCornerRadius,visuals::kSelectionCornerRadius),mutedBrush.Get(),1.5f);
       }
-
-      const D2D1_RECT_F textBounds = D2D1::RectF(
-          visuals::kResultTextLeft, top, visuals::kWindowWidth - visuals::kContentRight,
-          top + visuals::kResultHeight);
-      renderTarget_->DrawTextW(application.name.c_str(), static_cast<UINT32>(application.name.size()),
-                               resultTextFormat_.Get(), textBounds, textBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+      target->DrawTextW(label.data(),static_cast<UINT32>(label.size()),resultTextFormat_.Get(),
+          D2D1::RectF(visuals::kResultTextLeft,top,
+              visuals::kWindowWidth-(result.kind == LauncherResult::Kind::Command &&
+                  result.command != MenuItemId::System && result.command != MenuItemId::Appearance ? 120.0f : 40.0f),
+              top+visuals::kResultHeight),
+          textBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
   }
 
@@ -1139,17 +1374,19 @@ void LauncherApp::Render() {
     const D2D1_RECT_F bounds = D2D1::RectF(
         visuals::kContentRight, top, visuals::kWindowWidth - visuals::kContentRight,
         top + visuals::kStatusHeight);
-    renderTarget_->DrawTextW(status.c_str(), static_cast<UINT32>(status.size()), messageTextFormat_.Get(), bounds,
+    target->DrawTextW(status.c_str(), static_cast<UINT32>(status.size()), messageTextFormat_.Get(), bounds,
                              errorBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
   }
-
-  const HRESULT result = renderTarget_->EndDraw();
-  if (result == D2DERR_RECREATE_TARGET) {
-    ReleaseDeviceResources();
-  } else if (SUCCEEDED(result) && benchmarkPresentedEvent_ != nullptr) {
-    SetEvent(benchmarkPresentedEvent_);
-  }
-  EndPaint(window_, &paint);
+  const float footerTop = ResultsTop() + static_cast<float>(VisibleResultRows()) * visuals::kResultHeight +
+      (status.empty() ? 0.0f : visuals::kStatusHeight);
+  constexpr std::wstring_view hints = L"↑↓ navigate    ↵ open";
+  target->DrawTextW(hints.data(), static_cast<UINT32>(hints.size()), hintTextFormat_.Get(),
+      D2D1::RectF(18.0f, footerTop, visuals::kWindowWidth - 64.0f, footerTop + visuals::kFooterHeight),
+      mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  target->DrawTextW(L"Blade", 5, hintTextFormat_.Get(),
+      D2D1::RectF(visuals::kWindowWidth - 46.0f, footerTop,
+          visuals::kWindowWidth - 18.0f, footerTop + visuals::kFooterHeight),
+      mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 ComPtr<ID2D1Bitmap> LauncherApp::GetApplicationIcon(std::size_t applicationIndex) {
@@ -1236,6 +1473,16 @@ LRESULT CALLBACK LauncherApp::WindowProcedure(HWND window, UINT message, WPARAM 
   return DefWindowProcW(window, message, wParam, lParam);
 }
 
+LRESULT CALLBACK LauncherApp::AppearanceProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR referenceData) {
+  auto* app = reinterpret_cast<LauncherApp*>(referenceData);
+  if (message == WM_CTLCOLOREDIT && reinterpret_cast<HWND>(lParam) == app->edit_) {
+    return app->HandleMessage(message, wParam, lParam);
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, AppearanceProcedure, 2);
+  return DefSubclassProc(window, message, wParam, lParam);
+}
+
 LRESULT CALLBACK LauncherApp::EditProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR referenceData) {
   auto* app = reinterpret_cast<LauncherApp*>(referenceData);
@@ -1270,6 +1517,20 @@ LRESULT CALLBACK LauncherApp::EditProcedure(
         break;
     }
   }
+  if ((message==WM_PAINT || message==WM_PRINTCLIENT) && GetWindowTextLengthW(window)==0) {
+    const auto result=DefSubclassProc(window,message,wParam,lParam);
+    const HDC dc=message==WM_PRINTCLIENT ? reinterpret_cast<HDC>(wParam) : GetDC(window);
+    if(dc) {
+      RECT bounds{};GetClientRect(window,&bounds);
+      FillRect(dc,&bounds,app->editBackgroundBrush_);
+      SendMessageW(window,EM_GETRECT,0,reinterpret_cast<LPARAM>(&bounds));
+      wchar_t cue[256]{};SendMessageW(window,EM_GETCUEBANNER,reinterpret_cast<WPARAM>(cue),256);
+      const auto previous=SelectObject(dc,app->editFont_);SetTextColor(dc,blade_appearance_color("muted"));SetBkMode(dc,TRANSPARENT);
+      DrawTextW(dc,cue,-1,&bounds,DT_SINGLELINE|DT_TOP|DT_END_ELLIPSIS|DT_NOPREFIX);
+      SelectObject(dc,previous);if(message==WM_PAINT)ReleaseDC(window,dc);
+    }
+    return result;
+  }
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(window, EditProcedure, 1);
   }
@@ -1282,7 +1543,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     AddTrayIcon();
     if (installedAppsWatcher_) {
       if (!installedAppsWatcher_->Stop()) {
-        ShowNotification(L"Application Quick Dial", L"Could not restore app-change notifications. Restart Quick Dial.");
+        ShowNotification(L"Blade Launcher", L"Could not restore app-change notifications. Restart Launcher.");
       }
       UpdateInstalledApplicationsWatcher();
       ScheduleInstalledApplicationsRefresh();
@@ -1298,6 +1559,14 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       return 0;
     case kMessageLaunchSelection:
       ExecutePendingLaunch();
+      return 0;
+    case WM_SETTINGCHANGE:
+      blade_appearance_reload();
+      [[fallthrough]];
+    case WM_THEMECHANGED:
+      ApplyTheme();
+      ResizeAndPosition(false);
+      InvalidateRect(window_,nullptr,FALSE);
       return 0;
     case WM_CREATE:
       edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
@@ -1380,6 +1649,39 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
 
+    case WM_COPYDATA: {
+      const auto data = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+      std::wstring query;
+      const auto client = reinterpret_cast<HWND>(wParam);
+      if (!IsWindow(client) || !ReadDiagnosticRequest(data, query) || diagnosticRequests_.size() >= 8) return 0;
+      diagnosticRequests_.push_back({client, data->dwData, std::move(query)});
+      if (!PostMessageW(window_, kMessageDeliverDiagnostics, 0, 0)) {
+        diagnosticRequests_.pop_back(); return 0;
+      }
+      return 1;
+    }
+
+    case kMessageDeliverDiagnostics: {
+      if (diagnosticRequests_.empty()) return 0;
+      auto request = std::move(diagnosticRequests_.front());
+      diagnosticRequests_.pop_front();
+      if (!IsWindow(request.client)) return 0;
+      // Windows Runtime/COM work runs after the synchronous input handler.
+      try {
+        if (request.mode == kSearchRequest) {
+          ShowLauncher();
+          SetWindowTextW(edit_, request.query.c_str());
+          UpdateResults();
+          UpdateWindow(window_);
+        }
+        SendDiagnosticResponse(request.client, window_,
+            DiagnosticReport(request.mode == kStatusRequest ? L"" : request.query));
+      } catch (...) {
+        SendDiagnosticResponse(request.client, window_, L"{\"success\":false,\"error\":\"Launcher could not generate diagnostics.\"}");
+      }
+      return 0;
+    }
+
     case kMessageToggleLauncher:
       ToggleLauncher();
       return 0;
@@ -1403,7 +1705,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       if (!error.empty()) {
         installedApplicationsWatchError_ = error;
         if (catalogFileError_.empty()) RebuildCatalog();
-        ShowNotification(L"Application Quick Dial", error);
+        ShowNotification(L"Blade Launcher", error);
       }
       if (changed || !error.empty()) ScheduleInstalledApplicationsRefresh();
       return 0;
@@ -1412,7 +1714,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case kMessageBenchmarkState: {
       if (!benchmarkPresentedEvent_) return 0;
       LRESULT state = kBenchmarkAvailable;
-      if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ || discoveryChangePending_ ||
+      if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ || discoveryChangePending_ || discoveryRetryPending_ ||
           discoveryTasks_->HasPending() || iconTasks_->HasPending() ||
           (IsWindowVisible(window_) && GetUpdateRect(window_, nullptr, FALSE))) {
         state |= kBenchmarkPending;
@@ -1428,6 +1730,13 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         ProcessBackgroundResults();
       } else if (wParam == kInstalledApplicationsChangeTimer) {
         RefreshChangedInstalledApplications();
+      } else if (wParam == kInstalledApplicationsRetryTimer) {
+        KillTimer(window_, kInstalledApplicationsRetryTimer);
+        discoveryRetryPending_ = false;
+        if (configuredCatalog_.discoverInstalled) {
+          if (discoveryPending_) discoveryAgain_ = true;
+          else RequestInstalledApplications();
+        }
       }
       return 0;
 

@@ -44,18 +44,33 @@ quickdial::InstalledAppsResult Fixture() {
   first.name = L"Za\u017c\u00f3\u0142\u0107 \u65e5\u672c\U0001f680";
   first.target = L"shell:AppsFolder\\Example.App_123!App";
   first.identity = L"Example.App_123!App";
+  first.source = quickdial::ApplicationSource::AppsFolder;
   quickdial::ApplicationEntry second;
   second.name = L"Literal target";
   second.target = L"C:\\%USERPROFILE%\\quoted \"name\".exe";
-  return {{first, second}, {}};
+  second.source = quickdial::ApplicationSource::UserStartMenu;
+  second.resolvedTarget = L"C:\\Fixture\\app.exe";
+  second.shortcutArguments = L"--fixture \"two words\"";
+  second.shortcutWorkingDirectory = L"C:\\Fixture library";
+  second.launchKey = quickdial::EquivalentLaunchKey(second.resolvedTarget, second.shortcutArguments,
+                                                  second.shortcutWorkingDirectory);
+  return {{first, second}, {}, {{quickdial::ApplicationSource::AppsFolder, true, 2, {}},
+      {quickdial::ApplicationSource::UserStartMenu, true, 1, {}},
+      {quickdial::ApplicationSource::CommonStartMenu, false, 0, L"Fixture unavailable"}}};
 }
 
 bool SameApplications(const quickdial::InstalledAppsResult& left, const quickdial::InstalledAppsResult& right) {
-  if (left.error != right.error || left.applications.size() != right.applications.size()) return false;
+  if (left.error != right.error || left.applications.size() != right.applications.size() || left.sources.size() != right.sources.size()) return false;
+  for (std::size_t index = 0; index < left.sources.size(); ++index) {
+    const auto& a = left.sources[index]; const auto& b = right.sources[index];
+    if (a.source != b.source || a.succeeded != b.succeeded || a.skipped != b.skipped || a.error != b.error) return false;
+  }
   for (std::size_t index = 0; index < left.applications.size(); ++index) {
     const auto& a = left.applications[index];
     const auto& b = right.applications[index];
-    if (a.name != b.name || a.target != b.target || a.identity != b.identity) return false;
+    if (a.name != b.name || a.target != b.target || a.identity != b.identity || a.source != b.source || a.resolvedTarget != b.resolvedTarget ||
+        a.shortcutArguments != b.shortcutArguments || a.shortcutWorkingDirectory != b.shortcutWorkingDirectory ||
+        a.launchKey != b.launchKey) return false;
   }
   return true;
 }
@@ -84,6 +99,12 @@ void TestProtocol() {
         quickdial::ReadDiscoveryResult(buffer).error == failed.error, "helper errors survive transport");
   Check(quickdial::WriteDiscoveryResult(buffer, {}) &&
         static_cast<bool>(quickdial::ReadDiscoveryResult(buffer)), "empty successful discovery remains distinct from failure");
+  auto unavailableSource = expected;
+  unavailableSource.applications[0].source = quickdial::ApplicationSource::CommonStartMenu;
+  Check(!quickdial::WriteDiscoveryResult(buffer, unavailableSource), "failed sources cannot publish partial entries");
+  auto duplicateSource = expected;
+  duplicateSource.sources[1].source = duplicateSource.sources[0].source;
+  Check(!quickdial::WriteDiscoveryResult(buffer, duplicateSource), "duplicate provider statuses invalidate the transport");
   auto oversized = expected;
   oversized.applications.front().name.assign(32'769, L'x');
   Check(!quickdial::WriteDiscoveryResult(buffer, oversized) && !quickdial::ReadDiscoveryResult(buffer),
@@ -104,8 +125,12 @@ void TestProtocol() {
 
 // Fixture modes exist only in this test executable, never in the launcher.
 int RunFixture(int argc, wchar_t** argv) {
-  if (argc != 3) return 2;
+  if (argc != 3 && argc != 5) return 2;
   const auto mode = Environment(L"QUICKDIAL_TEST_DISCOVERY_MODE");
+  if (argc == 5 && mode == L"source-native") return *quickdial::RunDiscoveryHelperIfRequested();
+  if (argc == 5 && mode == L"source-hang" && std::wstring_view(argv[4]) == L"1") {
+    Sleep(INFINITE); return 1;
+  }
   if (mode == L"crash") return 17;
   if (mode == L"hang") {
     std::ofstream(std::filesystem::path(Environment(L"QUICKDIAL_TEST_DISCOVERY_PID"))) << GetCurrentProcessId();
@@ -122,6 +147,14 @@ int RunFixture(int argc, wchar_t** argv) {
                             FILE_MAP_WRITE, 0, 0, quickdial::kDiscoveryBufferBytes);
   if (!view) return 2;
   auto result = mode == L"error" ? quickdial::InstalledAppsResult{{}, L"Simulated discovery failure"} : Fixture();
+  if (argc == 5 && mode == L"source-hang") {
+    const auto source = static_cast<quickdial::ApplicationSource>(*argv[4] - L'0');
+    quickdial::ApplicationEntry app;
+    app.name = source == quickdial::ApplicationSource::UserStartMenu ? L"Healthy user shortcut" : L"Healthy shared shortcut";
+    app.target = source == quickdial::ApplicationSource::UserStartMenu ? L"user.lnk" : L"shared.lnk";
+    app.source = source;
+    result = {{app}, {}, {{source, true, 0, {}}}};
+  }
   const bool written = quickdial::WriteDiscoveryResult(
       {static_cast<std::byte*>(view), quickdial::kDiscoveryBufferBytes}, result);
   if (mode == L"corrupt") std::memset(view, 0xff, 16);
@@ -142,6 +175,19 @@ Handle WaitForFixture(const std::filesystem::path& pidPath) {
     std::this_thread::sleep_for(5ms);
   }
   return {};
+}
+
+void TestIndependentSourceProcesses() {
+  Mode(L"source-hang");
+  const auto result = quickdial::DiscoverInstalledApplicationsIsolated({}, {}, 600ms);
+  Check(result && result.applications.size() == 2 && result.sources.size() == 3 && !result.sources[0].succeeded &&
+      result.sources[1].succeeded && result.sources[2].succeeded,
+      "a genuinely blocked Apps-folder child is killed while both healthy shortcut sources publish updates");
+  Mode(L"source-native");
+  const auto expected = quickdial::DiscoverInstalledApplications();
+  const auto actual = quickdial::DiscoverInstalledApplicationsIsolated();
+  Check(SameApplications(expected, actual), "independent real provider helpers preserve the complete native source inventory");
+  Mode(L"success");
 }
 
 void TestProcesses(const std::filesystem::path& self, const std::filesystem::path& pidPath) {
@@ -226,14 +272,15 @@ int wmain(int argc, wchar_t** argv) {
   }
   const auto self = Executable();
   if (self.empty()) return 1;
+  winrt::init_apartment(winrt::apartment_type::single_threaded);
   const auto pidPath = self.parent_path() / (L"discovery-test-" + std::to_wstring(GetCurrentProcessId()) + L".pid");
   Check(SetEnvironmentVariableW(L"QUICKDIAL_TEST_DISCOVERY_PID", pidPath.c_str()) != FALSE, "fixture PID file is configured");
   TestProtocol();
+  TestIndependentSourceProcesses();
   TestProcesses(self, pidPath);
 
   // Compare the real launcher's private mode with the existing Shell enumerator.
   // The GUI singleton is deliberately irrelevant to helper invocations.
-  winrt::init_apartment(winrt::apartment_type::single_threaded);
   const auto direct = quickdial::DiscoverInstalledApplications();
   const auto isolated = quickdial::DiscoverInstalledApplicationsIsolated({}, self.parent_path() / L"ApplicationQuickDial.exe");
   Check(direct && isolated && SameApplications(direct, isolated),

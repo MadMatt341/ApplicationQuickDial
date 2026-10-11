@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ApplicationQuickDial VERSION 0.1.2 LANGUAGES CXX)
+project(ApplicationQuickDial VERSION 0.2.0 LANGUAGES CXX)
+add_compile_options(/utf-8)
+configure_file(version.rc.in version.rc @ONLY)
 
 # Keep portable builds independent of a separately installed VC++ runtime.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 if(NOT WIN32)
-  message(FATAL_ERROR "Application Quick Dial is a Windows-only application.")
+  message(FATAL_ERROR "Blade Launcher is a Windows-only application.")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,12 +21,13 @@ add_library(quickdial_core STATIC
   src/InstalledApps.cpp
   src/Search.cpp
   src/MainMenu.cpp
+  src/RefreshPolicy.cpp
 )
 
 target_include_directories(quickdial_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_definitions(quickdial_core PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(quickdial_core PUBLIC BLADE_LAUNCHER_VERSION="${PROJECT_VERSION}" UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(quickdial_core PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(quickdial_core PUBLIC windowsapp shell32)
+target_link_libraries(quickdial_core PUBLIC windowsapp shell32 ole32)
 
 add_library(quickdial_background STATIC
   src/BackgroundTasks.cpp
@@ -36,6 +39,9 @@ target_compile_options(quickdial_background PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(quickdial_background PUBLIC ole32 shell32 user32 gdi32 windowscodecs)
 
 add_library(quickdial_discovery STATIC src/DiscoveryProcess.cpp src/DiscoveryProtocol.cpp)
+add_library(quickdial_registration STATIC src/CatalogRegistration.cpp)
+target_compile_options(quickdial_registration PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(quickdial_registration PUBLIC quickdial_core advapi32)
 target_compile_options(quickdial_discovery PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(quickdial_discovery PUBLIC quickdial_core ole32)
 
@@ -46,9 +52,12 @@ add_executable(ApplicationQuickDial WIN32
   src/LauncherVisualStyle.cpp
   src/StartupManager.cpp
   src/SystemPower.cpp
+  src/SystemIcons.cpp
+  src/LauncherDiagnostics.cpp
   src/SingleInstance.cpp
   src/main.cpp
   resources.rc
+  ${CMAKE_CURRENT_BINARY_DIR}/version.rc
 )
 
 target_compile_definitions(ApplicationQuickDial PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -58,6 +67,7 @@ target_link_libraries(ApplicationQuickDial PRIVATE
   quickdial_core
   quickdial_background
   quickdial_discovery
+  quickdial_registration
   advapi32
   comctl32
   d2d1
@@ -71,8 +81,17 @@ target_link_libraries(ApplicationQuickDial PRIVATE
   windowscodecs
 )
 
+set(BLADE_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../WindowManager" CACHE PATH "Blade contract owner")
+include("${BLADE_SOURCE_ROOT}/appearance/BladeAppearance.cmake")
+target_link_libraries(ApplicationQuickDial PRIVATE blade_appearance)
+
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(quickdial_reliability_tests tests/ReliabilityTests.cpp src/InstalledAppsWatcher.cpp)
+  target_compile_options(quickdial_reliability_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_reliability_tests PRIVATE quickdial_registration)
+  add_test(NAME quickdial_reliability_tests COMMAND quickdial_reliability_tests)
+  set_tests_properties(quickdial_reliability_tests PROPERTIES TIMEOUT 20)
   add_executable(quickdial_tests
     tests/CoreTests.cpp
   )
@@ -102,12 +121,15 @@ if(BUILD_TESTING)
     src/LauncherVisualStyle.cpp
     src/StartupManager.cpp
     src/SystemPower.cpp
+    src/SystemIcons.cpp
+    src/LauncherDiagnostics.cpp
     resources.rc
+  ${CMAKE_CURRENT_BINARY_DIR}/version.rc
   )
   target_compile_options(quickdial_launcher_tests PRIVATE /W4 /permissive- /EHsc)
   target_link_options(quickdial_launcher_tests PRIVATE /MANIFEST:NO)
   target_link_libraries(quickdial_launcher_tests PRIVATE
-    quickdial_core quickdial_background quickdial_discovery advapi32 comctl32 d2d1 dwrite dwmapi shcore)
+    blade_appearance quickdial_core quickdial_background quickdial_discovery quickdial_registration advapi32 comctl32 d2d1 dwrite dwmapi shcore)
 
   add_executable(quickdial_benchmarks
     benchmarks/PerformanceBenchmarks.cpp

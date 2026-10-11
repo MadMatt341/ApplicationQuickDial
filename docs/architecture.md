@@ -1,6 +1,6 @@
 # Architecture overview
 
-Quick Dial is a native Win32 application with one resident GUI process per Win32 desktop. It has no service, database, or network dependency. The JSON catalog is its only persisted application data; Windows owns the separate sign-in registration.
+Launcher is a native Win32 application with one resident GUI process per Win32 desktop. It has no service, database, or network dependency. The JSON catalog is its only persisted application data; Windows owns the separate sign-in registration.
 
 The main thread owns windows, rendering, catalog state, selection, and launching. A dedicated keyboard-hook thread posts shortcut messages to it. Bounded background workers return owned results; app enumeration runs in a temporary child process so Shell discovery components leave memory when the scan ends.
 
@@ -12,7 +12,7 @@ Windows change notifications -> bounded discovery refresh -> main-thread complet
 
 ## Blade integration
 
-Quick Dial remains an independent product and repository. It owns app discovery,
+Launcher remains an independent product and repository. It owns app discovery,
 search, launch behavior, and its main menu. Blade owns shell session supervision,
 installation, and recovery; a future Rail widget opens the existing launcher
 through a documented contract. It must not duplicate launcher state or depend on
