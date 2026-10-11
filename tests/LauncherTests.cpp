@@ -108,6 +108,45 @@ class LauncherAppTestAccess {
   }
 
  public:
+  static int CheckWindowVisibility(LauncherApp& app) {
+    int failures = 0;
+    const auto check = [&failures](bool condition, const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    DWORD owner = 0;
+    GetWindowThreadProcessId(app.window_, &owner);
+    check(owner == GetCurrentProcessId(), "visibility checks observe the owned fixture window");
+    check(!IsWindowVisible(app.window_), "shell startup remains hidden before visibility checks");
+    for (const bool chooseMonitor : {false, true}) {
+      app.HideLauncher();
+      app.ResizeAndPosition(chooseMonitor);
+      check(!IsWindowVisible(app.window_), "layout updates preserve a hidden window");
+    }
+    app.HideLauncher();
+    SendMessageW(app.window_, WM_THEMECHANGED, 0, 0);
+    check(!IsWindowVisible(app.window_), "theme notifications preserve a hidden window");
+    app.HideLauncher();
+    SendMessageW(app.window_, WM_SETTINGCHANGE, SPI_SETWORKAREA, 0);
+    check(!IsWindowVisible(app.window_), "work-area notifications preserve a hidden window");
+
+    app.ShowLauncher();
+    check(IsWindowVisible(app.window_), "an explicit open still shows the launcher");
+    for (const bool chooseMonitor : {false, true}) {
+      app.ResizeAndPosition(chooseMonitor);
+      check(IsWindowVisible(app.window_), "layout updates preserve a visible window");
+    }
+    SendMessageW(app.window_, WM_THEMECHANGED, 0, 0);
+    check(IsWindowVisible(app.window_), "theme notifications preserve a visible window");
+    SendMessageW(app.window_, WM_SETTINGCHANGE, SPI_SETWORKAREA, 0);
+    check(IsWindowVisible(app.window_), "work-area notifications preserve a visible window");
+    app.EnterShellMode();
+    app.ShowNotification(L"Fixture message", L"Visible without a tray");
+    check(IsWindowVisible(app.window_) && app.launchError_.find(L"Visible without a tray") != std::wstring::npos,
+          "tray-free notifications still show their message");
+    app.HideLauncher();
+    return failures;
+  }
+
   static int CheckSearch(LauncherApp& app) {
     int failures = 0;
     const auto check = [&failures](bool condition, const char* description) {
@@ -325,6 +364,7 @@ class LauncherAppTestAccess {
       ++failures;
       std::cerr << "FAILED: shell mode starts hidden without a tray icon\n";
     }
+    failures += CheckWindowVisibility(app);
     failures += CheckSearch(app);
     failures += CheckMainMenu(app);
     if (!snapshots.empty()) {

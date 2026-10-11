@@ -327,7 +327,7 @@ void LauncherApp::ResizeAndPosition(bool chooseMonitor) {
     y = work.top + std::max(ScaleForDpiInt(24.0f, dpi_), static_cast<int>((work.bottom - work.top) * 0.18));
   }
 
-  SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
   LayoutEditControl();
 }
 

@@ -44,6 +44,8 @@ Enter and Escape ignore auto-repeat, so one held key cannot enter System and the
 
 The launcher is a topmost `WS_POPUP`/`WS_EX_TOOLWINDOW`, so it does not create a normal taskbar button. It hides when deactivated.
 
+The Launcher window stays in view or out of view during theme, settings, and position changes.
+
 On show, it chooses the foreground window's monitor, falling back to the cursor monitor, and positions itself near the upper center of that monitor's work area. Width and row dimensions are constants in device-independent pixels; `ResizeAndPosition` and `LayoutEditControl` scale them for monitor DPI. Height follows the number of visible results (up to six), a System header when inside that submenu, and an optional error row. The System header has a separate back-arrow hit area and is excluded from action-row hit testing.
 
 The search field is a native edit control. The rest is rendered with Direct2D and DirectWrite. Theme colors follow `AppsUseLightTheme` and are refreshed whenever the launcher opens.
