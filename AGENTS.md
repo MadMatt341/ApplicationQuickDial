@@ -48,3 +48,12 @@ Before you complete a documentation change, examine all new and changed text.
 Run the CTest suite for every code change and the affected checks in [testing.md](docs/testing.md). For documentation-only changes, check links, preserved contracts, and `git diff --check`; no native rebuild is needed.
 
 Keep generated content in `build/` or `out/`. Update the owning reference when changing a contract, shortcut, startup flow, message boundary, or build requirement. Keep task history and machine-specific diagnostic output out of permanent documentation.
+
+## Finish and sync Blade
+
+For usual Blade development, use `main`.
+Use a different branch for a test.
+When the user says "finish and sync", follow the [Blade completion procedure](https://github.com/MadMatt341/WindowManager/blob/main/docs/blade-development.md#finish-and-sync).
+This request includes the related Blade repositories and next-start staging.
+Keep work outside the task scope.
+Do not sign out or restart the running shell.
