@@ -49,6 +49,12 @@ Run the CTest suite for every code change and the affected checks in [testing.md
 
 Keep generated content in `build/` or `out/`. Update the owning reference when changing a contract, shortcut, startup flow, message boundary, or build requirement. Keep task history and machine-specific diagnostic output out of permanent documentation.
 
+## Completion reports
+
+When changes are ready for a commit, push, or product release, give the [completion report](https://github.com/MadMatt341/WindowManager/blob/main/docs/blade-development.md#completion-report).
+Include each state and any remaining action.
+Keep the task approvals.
+
 ## Finish and sync Blade
 
 For usual Blade development, use `main`.
