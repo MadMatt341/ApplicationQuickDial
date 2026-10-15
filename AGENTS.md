@@ -60,6 +60,15 @@ Keep the task approvals.
 For usual Blade development, use `main`.
 Use a different branch for a test.
 When the user says "finish and sync", follow the [Blade completion procedure](https://github.com/MadMatt341/WindowManager/blob/main/docs/blade-development.md#finish-and-sync).
-This request includes the related Blade repositories and next-start staging.
+This request gives approval for checks, commits, pushes to main, signing, publication, and next-start staging across Blade repositories.
+Publication is the default after the normal release checks pass.
+Use source-only completion when the user requests it.
 Keep work outside the task scope.
 Do not sign out or restart the running shell.
+
+When the user says "continue here", use the [Blade continuation procedure](https://github.com/MadMatt341/WindowManager/blob/main/docs/blade-development.md#continue-here).
+This request gives approval to get saved source and change clean checkouts to its recorded revisions.
+When the user says "save my work", use the [Blade work checkpoint procedure](https://github.com/MadMatt341/WindowManager/blob/main/docs/blade-development.md#save-my-work).
+This request gives approval to save unfinished files and staged versions in private Git storage.
+Keep the original working files and index.
+Neither request gives approval for product publication or a shell restart.
