@@ -43,7 +43,7 @@ Run `.\build\Release\ApplicationQuickDial.exe` on the user's normal desktop. It 
 | Search or selection | `src/Search.*`, `src/LauncherApp.cpp` | [Ranking and selection](design/interaction-rendering.md#search-and-selection) | Core tests; catalog/search checks |
 | Shortcut or edit keys | `src/HotkeyState.*`, `src/HookManager.*`, `src/LauncherApp.cpp` | [Shortcut flow](design/interaction-rendering.md#shortcut-flow) | Core tests; shortcut/focus checks |
 | Layout, theme, DPI, icons | `src/LauncherApp.*`, `src/LauncherVisualStyle.*`, `src/IconLoader.*` | [Rendering](design/interaction-rendering.md#window-and-rendering) | Background/launcher tests; affected visual checks |
-| Application launching | `src/LauncherApp.cpp` | [Launching](design/interaction-rendering.md#launching) | Launching/argument checks |
+| Application launching | `src/LauncherApp.cpp`, `src/UgsActivation.*` | [Launching](design/interaction-rendering.md#launching) | Launching/argument checks; UGS activation CTest |
 | Startup, singleton, tray | `src/main.cpp`, `src/SingleInstance.*`, `src/StartupManager.*`, `src/LauncherApp.cpp` | [Runtime](design/runtime.md), [diagnostics](troubleshooting.md#startup-and-desktop) | Singleton/launcher tests; lifecycle and sign-in checks |
 | Message boundaries | `src/AppMessages.h` and sender/receiver | Relevant [design section](architecture.md) | Both sides of the changed message path |
 | Build, manifest, packaging | `CMakeLists.txt`, `app.manifest`, `resources.rc`, `package.ps1` | [Release workflow](releases.md) | Build, CTest, affected desktop checks, package inspection |

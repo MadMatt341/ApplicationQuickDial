@@ -49,6 +49,7 @@ add_executable(ApplicationQuickDial WIN32
   src/HookManager.cpp
   src/InstalledAppsWatcher.cpp
   src/LauncherApp.cpp
+  src/UgsActivation.cpp
   src/LauncherVisualStyle.cpp
   src/StartupManager.cpp
   src/SystemPower.cpp
@@ -118,6 +119,7 @@ if(BUILD_TESTING)
     src/HookManager.cpp
     src/InstalledAppsWatcher.cpp
     src/LauncherApp.cpp
+    src/UgsActivation.cpp
     src/LauncherVisualStyle.cpp
     src/StartupManager.cpp
     src/SystemPower.cpp
@@ -144,4 +146,11 @@ if(BUILD_TESTING)
   target_compile_definitions(quickdial_single_instance_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(quickdial_single_instance_tests PRIVATE /W4 /permissive- /EHsc)
   target_link_libraries(quickdial_single_instance_tests PRIVATE user32)
+
+  # Creates an owned private desktop; never activates the user's applications.
+  add_executable(quickdial_ugs_activation_tests tests/UgsActivationTests.cpp src/UgsActivation.cpp)
+  target_compile_options(quickdial_ugs_activation_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_ugs_activation_tests PRIVATE quickdial_core user32)
+  add_test(NAME quickdial_ugs_activation_tests COMMAND quickdial_ugs_activation_tests)
+  set_tests_properties(quickdial_ugs_activation_tests PROPERTIES TIMEOUT 30)
 endif()

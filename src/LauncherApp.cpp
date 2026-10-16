@@ -1,5 +1,6 @@
 #include "blade_appearance.h"
 #include "LauncherApp.h"
+#include "UgsActivation.h"
 
 #include "AppMessages.h"
 #include "BackgroundTasks.h"
@@ -1002,6 +1003,7 @@ void LauncherApp::ExecutePendingLaunch() {
 }
 
 bool LauncherApp::LaunchApplication(const ApplicationEntry& application, std::wstring& error) {
+  if (TryActivateRunningUgs(application)) return true;
   std::wstring file = application.target;
   std::wstring parameters = JoinArguments(application.arguments);
   constexpr std::wstring_view appsPrefix = L"shell:AppsFolder\\";

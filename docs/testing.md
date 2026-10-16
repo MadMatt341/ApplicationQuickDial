@@ -15,6 +15,7 @@ The targets are:
 - `quickdial_discovery_tests`: CTest coverage for transport validation, child crashes/timeouts, cancellation, restricted handle inheritance, cleanup after abrupt parent exit, repeated requests, and comparison with real Shell discovery.
 - `quickdial_launcher_tests`: explicit desktop integration checks using an isolated temporary catalog; briefly shows a test launcher and exercises tray restoration, catalog completion, benchmark state, and 140 distinct icon-cache entries.
 - `quickdial_single_instance_tests`: explicit integration checks using private Win32 desktops and fixture processes. Covers independent desktop instances, repeated launches, concurrent startup, abandoned ownership, older-version forwarding, and bounded failures for missing or unresponsive windows. It does not switch the user's desktop or use their catalog.
+- `quickdial_ugs_activation_tests`: CTest coverage for the UGS activation adapter with an application fixture and tray host on a private desktop.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
 
@@ -34,6 +35,16 @@ With a normal interactive Windows desktop, run the launcher integration checks s
 These checks use their own window and temporary JSON file. They do not modify the user's catalog, launch the user's applications, or restart Explorer. Shell-mode checks verify hidden tray-free startup, the actual F10 menu, visible tray-free messages, mode handoff, and absence of a tray icon. Launch checks run only a private test-executable mode, directly and via a uniquely named temporary Start-menu shortcut with an Apps-folder identity, and verify arguments through an output file. The shortcut and output are removed afterward. A nonexistent packaged-app identity also verifies direct activation failure, case-insensitive Apps-folder routing, and the absence of Shell fallback. Repeated synchronously delivered Enter messages verify that activation waits until the input handler returns, preserves the selected entry across catalog changes, and retains launch failure status without queuing duplicates. These checks do not establish compatibility with every packaged app or prove operation after Explorer is stopped; verify the affected packaged app from the real launcher in the custom-shell session. Tray recreation is simulated by deleting only the test window's tray icon and delivering `TaskbarCreated` to that window. Automatic discovery checks exercise actual Apps-folder Shell notification delivery, event coalescing, refresh while hidden, retry after failure, cancellation when disabled, and fresh cached reopening, failure/stale catch-up and finite readiness retries. Deterministic completion checks also verify that a newly installed app appears in the current query, disappears after removal, and leaves icon state intact when a scan finds no changes.
 
 Run `quickdial_launcher_tests.exe --check-launching` for only the launch fixture and missing-target checks, using a tray-free launcher. This mode can run in a custom-shell session without Explorer: it verifies the temporary shortcut by its `.lnk` path and explicitly skips its new desktop Apps-folder registration, which requires Explorer's app index. It also omits the full suite's tray restoration checks.
+
+CTest includes `quickdial_ugs_activation_tests` for the
+[UGS compatibility path](design/interaction-rendering.md#ugs-hidden-startup-compatibility).
+The test creates a private desktop and an owned application named `UnrealGameSync.exe`.
+It checks native tray messages, visible activation, process images, changed shortcut arguments, incorrect replies, and call timeouts.
+It also checks that an unrelated tray application keeps the normal launch path.
+It does not switch the input desktop or use the installed UGS.
+Installed acceptance must separately check the original UGS through Blade Launcher.
+
+The test requires native Windows desktop permissions and fails if these permissions are missing.
 
 Run `quickdial_launcher_tests.exe --private-desktop --check-installation` for the real Start-menu notification check. It creates a uniquely named temporary executable and user Start-menu shortcut while the launcher is hidden, verifies discovery without opening or manually reloading, then removes the shortcut and verifies the result disappears. It sends no synthetic change notification for the shortcut. Both fixture files are cleaned up; the target is never launched.
 

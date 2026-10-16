@@ -113,3 +113,25 @@ Each argument is quoted using Windows command-line escaping rules, then joined i
 A successful launch hides the launcher. A failure stays visible and adds an error row.
 
 Sign out uses EWX_LOGOFF for the current session, without a shutdown privilege or force flags. Windows handles save-work negotiation. This action also activates a prepared Blade update at the next sign-in. Automated launcher checks substitute dispatch and verify its independent selection and visible failure; actual sign-out/sign-in remains an explicitly authorized desktop acceptance check.
+
+### UGS hidden startup compatibility
+
+UGS can start with `-RestoreState` and keep its startup window hidden.
+In this state, UGS can finish its startup tasks without creating its main window.
+Its normal second-instance signal does not open that startup window.
+
+For an `UnrealGameSync.exe` command with no arguments, Launcher first checks the
+[Blade notification tray](https://github.com/MadMatt341/WindowManager/blob/main/docs/notification-tray.md#rail-transport).
+It selects one registration with the UGS tooltip and the correct process image.
+The image path must be the command path or `Latest/UnrealGameSync.exe` under the same installation root as `Launcher/UnrealGameSync.exe`.
+Launcher sends the existing `double` action with the current icon rectangle.
+UGS then opens its startup window or main window through its own callback.
+
+Commands with arguments use the normal Shell launch path.
+Launcher reads a selected `.lnk` file again before this check to keep changed shortcut arguments.
+Shortcuts with a specified display state other than normal also use the Shell launch path.
+A missing host, incorrect response, missing rectangle, rejected action, or more than one applicable registration also uses the normal launch path.
+Each tray call has a 250-millisecond limit.
+
+This optional connection does not change other applications or require Blade for standalone Launcher use.
+Direct shortcut launches outside Launcher do not use this compatibility path.
