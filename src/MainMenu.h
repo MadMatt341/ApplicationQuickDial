@@ -14,7 +14,7 @@ std::wstring_view MenuItemLabel(MenuItemId item);
 std::vector<MenuItemId> MenuItems(MenuPage page, std::wstring_view query);
 bool IsExactMenuQuery(MenuItemId item, std::wstring_view query);
 struct LauncherResult {
-  enum class Kind { Application, Command } kind = Kind::Application;
+  enum class Kind { Application, Command, TrayControl } kind = Kind::Application;
   std::size_t application = 0;
   MenuItemId command = MenuItemId::System;
   bool operator==(const LauncherResult&) const = default;

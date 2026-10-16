@@ -21,6 +21,11 @@ If **Win+Space** does nothing, try the tray icon. Hook installation failure is r
 
 ## Catalog, discovery, or icons
 
+For a running application whose main window does not open, search for its separate **Tray controls** result.
+Select that result to request the application's own menu.
+The [Tray controls contract](design/interaction-rendering.md#tray-controls) gives the supported behavior and failure conditions.
+Use `--status` or `--search` to examine `trayConnected`, `trayError`, and typed `tray-controls` results.
+
 - Catalog edits reload on open or **Reload app list**. A parse error retains the previous valid catalog; inspect the error before assuming the edit was ignored.
 - Use **F10 → Diagnostics** or the [diagnostic CLI](design/runtime.md#diagnostic-boundary). Confirm the actual running executable/version and account/catalog path first. A new build forwarded to an old singleton does not update the running binary.
 - For a missing app, inspect matching `entries`: a hidden rule, maintenance classification, duplicate command, or disabled discovery is different from absence. Inspect each provider’s health/skipped count. Physical Start-menu shortcuts are read even without an Apps-folder index entry. Reload retries degraded sources; healthy providers continue updating.

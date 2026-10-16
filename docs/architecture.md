@@ -21,11 +21,10 @@ cross-component placement and extraction decisions. The current
 [shell-mode contract](design/runtime.md#custom-shell-mode) remains the implemented
 integration; a repository policy does not introduce a new runtime dependency.
 
-Launcher also has an optional
-[UGS activation adapter](design/interaction-rendering.md#ugs-hidden-startup-compatibility).
-Blade's tray host keeps the registration; UGS keeps its application state.
-Launcher requests the existing tray action only for a UGS open command with no arguments.
-The adapter stays in Launcher because it owns launch behavior and needs no new process.
+Launcher has an optional [Tray controls connection](design/interaction-rendering.md#tray-controls).
+The supervisor owns registrations; Launcher owns searchable results and captured menu requests.
+Applications keep control of their menus and hidden startup windows.
+This connection stays in Launcher because it owns search and user selection and needs no new process.
 
 ## Read at the affected boundary
 

@@ -17,6 +17,7 @@ inline constexpr UINT kMessageEnterShellMode = WM_APP + 8;
 inline constexpr UINT kMessageLaunchSelection = WM_APP + 9;
 // Internal queued power action; the owner captures it before dispatch.
 inline constexpr UINT kMessageSystemPowerAction = WM_APP + 10;
+inline constexpr UINT kMessageTrayControlMenu = WM_APP + 11;
 inline constexpr LRESULT kBenchmarkAvailable = 1;
 inline constexpr LRESULT kBenchmarkPending = 2;
 inline constexpr LRESULT kBenchmarkFailed = 4;

@@ -1,4 +1,5 @@
 #include "LauncherApp.h"
+#include "TrayControlsFixture.h"
 #include <dwmapi.h>
 #include "LauncherVisualStyle.h"
 #include <algorithm>
@@ -113,6 +114,94 @@ class LauncherAppTestAccess {
   }
 
  public:
+  static int RunTrayControlChecks(const std::filesystem::path& catalog, const std::filesystem::path& captures = {}) {
+    wchar_t desktopName[256]{};
+    DWORD needed=0;
+    if (!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,desktopName,sizeof(desktopName),&needed) ||
+        !std::wstring_view(desktopName).starts_with(L"BladeLauncherFixture-")) {
+      std::cerr << "FAILED: use --private-desktop for tray controls checks\n"; return 1;
+    }
+    int failures = 0;
+    const auto check = [&](bool condition,const char* description) {
+      if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
+    };
+    check(ReadTrayControls().items.empty(),"private desktop begins without a tray host");
+    TrayControlsFixture fixture;
+    if (!fixture.Ready()) { std::cerr << "FAILED: private tray host prerequisite\n"; return 1; }
+    const auto initial = ReadTrayControls();
+    check(initial.connected && initial.items.size()==2,"generic native registrations are discovered without app-name rules");
+    if (initial.items.size()!=2) return 1;
+    check(initial.items[0].image.width==32 && initial.items[0].image.height==32 &&
+        initial.items[0].image.pixels.size()==4096 && initial.items[0].image.pixels[0]==255 &&
+        initial.items[0].image.pixels[1]==0 && initial.items[0].image.pixels[2]==0 && initial.items[0].image.pixels[3]==255,
+        "snapshot pixels retain an independently specified blue BGRA image");
+    check(fixture.menus==0 && fixture.unexpectedActions==0,"reading registrations performs no app action");
+    std::wstring error;
+    std::stop_source stopped; stopped.request_stop();
+    const auto reads = fixture.snapshots.load();
+    check(!RequestTrayControlMenu(initial.items[0],{100,20,124,44},stopped.get_token(),error) && fixture.snapshots==reads,
+          "cancelled menu request never reaches the host");
+    fixture.generation = 2;
+    check(!RequestTrayControlMenu(initial.items[0],{100,20,124,44},{},error) && fixture.menus==0,
+          "stale host session cannot activate a reused token");
+    fixture.malformed = true;
+    check(!ReadTrayControls().connected,"malformed snapshot is rejected");
+    fixture.malformed = false;
+    fixture.blocked = true;
+    const auto before = std::chrono::steady_clock::now();
+    check(!ReadTrayControls().connected && std::chrono::steady_clock::now()-before<std::chrono::milliseconds(600),
+          "stalled tray host has a bounded timeout");
+    DWORD_PTR pong=0;
+    check(SendMessageTimeoutW(fixture.window,WM_NULL,0,0,SMTO_ABORTIFHUNG,1000,&pong)!=0,"owned stalled host recovers");
+    fixture.blocked = false;
+
+    std::ofstream(catalog) << R"({"version":1,"discoverInstalled":false,"applications":[{"name":"Hidden Startup Fixture","target":"missing-owned-fixture.exe"}]})";
+    LauncherApp app(nullptr,catalog,true);
+    if (!app.Initialize(GetModuleHandleW(nullptr))) return 1;
+    app.ShowLauncher();
+    SetWindowTextW(app.edit_,L"Hidden Startup Fixture");
+    check(PumpUntil(app,[&] { return app.trayControls_.items.size()==2; }),"background tray discovery reaches Launcher");
+    const auto find = [&] {
+      return std::find_if(app.searchResults_.begin(),app.searchResults_.end(),[](const auto& item) { return item.kind==LauncherResult::Kind::TrayControl; });
+    };
+    check(find()!=app.searchResults_.end(),"running hidden app has a separate searchable tray-controls result");
+    check(app.searchResults_.size()==2 && app.searchResults_[0].kind==LauncherResult::Kind::Application,
+          "normal launch and tray controls remain separate result types");
+    check(fixture.menus==0 && fixture.unexpectedActions==0,"searching never clicks a tray icon");
+    if (!captures.empty()) {
+      if (find()!=app.searchResults_.end()) app.selectedResult_=static_cast<std::size_t>(find()-app.searchResults_.begin());
+      std::filesystem::create_directories(captures);
+      for (const UINT dpi : {96U,144U,192U})
+        check(CaptureMenu(app,captures/(L"tray-controls-"+std::to_wstring(dpi)+L".bmp"),false,dpi),"tray result software render capture");
+    }
+    if (find()!=app.searchResults_.end()) {
+      app.selectedResult_=static_cast<std::size_t>(find()-app.searchResults_.begin());
+      app.LaunchSelection(); app.LaunchSelection();
+      SetWindowTextW(app.edit_,L"Status Fixture");
+      check(PumpUntil(app,[&] { return fixture.menus==1 && !app.trayMenuActive_; }),"explicit selection requests an app-owned menu once");
+      check(fixture.lastToken==11 && IsWindowVisible(fixture.popup),"captured selection is not retargeted by a query change");
+      check(!IsWindowVisible(app.window_),"accepted menu request hides Launcher");
+    }
+    app.ShowLauncher(); SetWindowTextW(app.edit_,L"Hidden Startup Fixture");
+    if (find()!=app.searchResults_.end()) {
+      app.selectedResult_=static_cast<std::size_t>(find()-app.searchResults_.begin());
+      app.LaunchSelection(); app.HideLauncher();
+      PumpUntil(app,[&] { return !app.pendingTrayMenu_; });
+      check(fixture.menus==1,"dismissal before dispatch cancels the queued menu");
+    }
+    app.ShowLauncher(); SetWindowTextW(app.edit_,L"Hidden Startup Fixture");
+    fixture.rejectMenu=true;
+    if (find()!=app.searchResults_.end()) {
+      app.selectedResult_=static_cast<std::size_t>(find()-app.searchResults_.begin());
+      app.LaunchSelection();
+      check(PumpUntil(app,[&] { return !app.launchError_.empty(); }),"rejected menu stays visible with an actionable error");
+      check(IsWindowVisible(app.window_) && fixture.menus==1,"menu failure does not launch or click another app");
+    }
+    check(fixture.unexpectedActions==0,"no automatic left or double click was sent to either app");
+    DestroyWindow(app.window_);
+    if (!failures) std::cout << "General tray controls and cancellation checks passed.\n";
+    return failures ? 1 : 0;
+  }
   static int CheckWindowVisibility(LauncherApp& app) {
     int failures = 0;
     const auto check = [&failures](bool condition, const char* description) {
@@ -1026,6 +1115,15 @@ class LauncherAppTestAccess {
 
 int main(int argc, char** argv) {
   if (argc >= 2 && std::string_view(argv[1]) == "--private-desktop") {
+    const auto inputName=[] {
+      const auto desktop=OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+      wchar_t name[256]{}; DWORD needed=0;
+      const bool read=desktop && GetUserObjectInformationW(desktop,UOI_NAME,name,sizeof(name),&needed);
+      if (desktop) CloseDesktop(desktop);
+      return read ? std::wstring(name) : std::wstring{};
+    };
+    const auto originalInput=inputName();
+    if (originalInput.empty()) { std::cerr << "FAILED: cannot identify input desktop\n"; return 1; }
     const std::wstring desktopName = L"BladeLauncherFixture-" + std::to_wstring(GetCurrentProcessId());
     HDESK desktop = CreateDesktopW(desktopName.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
     if (!desktop) { std::cerr << "FAILED: private desktop prerequisite " << GetLastError() << '\n'; return 1; }
@@ -1044,6 +1142,7 @@ int main(int argc, char** argv) {
     if (wait == WAIT_OBJECT_0) GetExitCodeProcess(child.hProcess, &result);
     else { TerminateProcess(child.hProcess, 1); WaitForSingleObject(child.hProcess, 5000); std::cerr << "FAILED: private fixture timed out\n"; }
     CloseHandle(child.hProcess); CloseDesktop(desktop);
+    if (inputName()!=originalInput) { std::cerr << "FAILED: input desktop changed\n"; return 1; }
     return static_cast<int>(result);
   }
   if (argc >= 2 && std::string_view(argv[1]) == "--launched-fixture") {
@@ -1090,8 +1189,9 @@ int main(int argc, char** argv) {
                      << R"({"name":"Test Bravo","target":"bravo.exe"}]})";
   const bool checkInstallation = argc == 2 && std::string_view(argv[1]) == "--check-installation";
   const bool checkLaunching = argc == 2 && std::string_view(argv[1]) == "--check-launching";
+  const bool checkTrayControls = argc >= 2 && std::string_view(argv[1]) == "--check-tray-controls";
   const bool checkMainMenu = argc >= 2 && std::string_view(argv[1]) == "--check-main-menu";
-  const int result = checkInstallation ? quickdial::LauncherAppTestAccess::RunDiscoveryChecks(path) : checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
+  const int result = checkTrayControls ? quickdial::LauncherAppTestAccess::RunTrayControlChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkInstallation ? quickdial::LauncherAppTestAccess::RunDiscoveryChecks(path) : checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
                                    : quickdial::LauncherAppTestAccess::Run(path, iconPath, checkInstallation);
   std::filesystem::remove(path);
   std::filesystem::remove(iconPath);

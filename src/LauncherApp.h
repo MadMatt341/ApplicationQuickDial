@@ -6,6 +6,7 @@
 #include "SystemPower.h"
 #include "RefreshPolicy.h"
 #include "InstalledApps.h"
+#include "TrayControls.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -94,6 +95,10 @@ class LauncherApp {
   std::optional<std::size_t> ResultAtY(float y) const;
   void LaunchSelection();
   void ExecutePendingLaunch();
+  void RequestTrayControls();
+  void ApplyTrayControls(TrayControlsSnapshot snapshot);
+  void ExecutePendingTrayMenu();
+  Microsoft::WRL::ComPtr<ID2D1Bitmap> GetTrayControlIcon(std::size_t index);
   bool LaunchApplication(const ApplicationEntry& application, std::wstring& error);
   void OpenCatalog();
   void AddApplication();
@@ -142,6 +147,13 @@ class LauncherApp {
   std::wstring catalogError_;
   std::wstring launchError_;
   std::optional<ApplicationEntry> pendingLaunch_;
+  TrayControlsSnapshot trayControls_;
+  std::vector<Microsoft::WRL::ComPtr<ID2D1Bitmap>> trayIcons_;
+  struct PendingTrayMenu { TrayControl item; std::array<int, 4> anchor; };
+  std::optional<PendingTrayMenu> pendingTrayMenu_;
+  bool trayRefreshPending_ = false, trayMenuActive_ = false;
+  std::stop_source trayMenuCancellation_;
+  std::size_t trayMenuGeneration_ = 0;
   MenuPage menuPage_ = MenuPage::Main;
   std::vector<MenuItemId> menuItems_;
   std::optional<MenuItemId> pendingPowerAction_;
@@ -160,6 +172,7 @@ class LauncherApp {
   std::unique_ptr<InstalledAppsWatcher> installedAppsWatcher_;
   std::unique_ptr<BackgroundTasks> iconTasks_;
   std::unique_ptr<BackgroundTasks> discoveryTasks_;
+  std::unique_ptr<BackgroundTasks> trayTasks_;
   std::stop_source discoveryCancellation_;
 
   Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;

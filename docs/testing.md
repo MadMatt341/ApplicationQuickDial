@@ -15,7 +15,6 @@ The targets are:
 - `quickdial_discovery_tests`: CTest coverage for transport validation, child crashes/timeouts, cancellation, restricted handle inheritance, cleanup after abrupt parent exit, repeated requests, and comparison with real Shell discovery.
 - `quickdial_launcher_tests`: explicit desktop integration checks using an isolated temporary catalog; briefly shows a test launcher and exercises tray restoration, catalog completion, benchmark state, and 140 distinct icon-cache entries.
 - `quickdial_single_instance_tests`: explicit integration checks using private Win32 desktops and fixture processes. Covers independent desktop instances, repeated launches, concurrent startup, abandoned ownership, older-version forwarding, and bounded failures for missing or unresponsive windows. It does not switch the user's desktop or use their catalog.
-- `quickdial_ugs_activation_tests`: CTest coverage for the UGS activation adapter with an application fixture and tray host on a private desktop.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
 
@@ -36,15 +35,17 @@ These checks use their own window and temporary JSON file. They do not modify th
 
 Run `quickdial_launcher_tests.exe --check-launching` for only the launch fixture and missing-target checks, using a tray-free launcher. This mode can run in a custom-shell session without Explorer: it verifies the temporary shortcut by its `.lnk` path and explicitly skips its new desktop Apps-folder registration, which requires Explorer's app index. It also omits the full suite's tray restoration checks.
 
-CTest includes `quickdial_ugs_activation_tests` for the
-[UGS compatibility path](design/interaction-rendering.md#ugs-hidden-startup-compatibility).
-The test creates a private desktop and an owned application named `UnrealGameSync.exe`.
-It checks native tray messages, visible activation, process images, changed shortcut arguments, incorrect replies, and call timeouts.
-It also checks that an unrelated tray application keeps the normal launch path.
-It does not switch the input desktop or use the installed UGS.
-Installed acceptance must separately check the original UGS through Blade Launcher.
+Run `quickdial_launcher_tests.exe --private-desktop --check-tray-controls` for general tray recovery checks.
+The test creates an application menu fixture and tray host on a private desktop.
+It checks background discovery, separate search results, captured selection, cancellation, menu failures, timeouts, pixels, and changed host sessions.
+It verifies that reading and searching send no application callbacks.
+The fixture fails if a request uses an automatic left or double click.
+It does not switch the input desktop or use installed applications.
 
-The test requires native Windows desktop permissions and fails if these permissions are missing.
+An optional output directory after `--check-tray-controls` saves software render captures at 96, 144, and 192 DPI.
+These captures use the production drawing path and do not establish active-compositor acceptance.
+Native Windows desktop permissions are necessary; missing prerequisites cause failure.
+Installed verification must separately check the selected release and an application's own tray menu.
 
 Run `quickdial_launcher_tests.exe --private-desktop --check-installation` for the real Start-menu notification check. It creates a uniquely named temporary executable and user Start-menu shortcut while the launcher is hidden, verifies discovery without opening or manually reloading, then removes the shortcut and verifies the result disappears. It sends no synthetic change notification for the shortcut. Both fixture files are cleaned up; the target is never launched.
 

@@ -1,6 +1,5 @@
 #include "blade_appearance.h"
 #include "LauncherApp.h"
-#include "UgsActivation.h"
 
 #include "AppMessages.h"
 #include "BackgroundTasks.h"
@@ -59,6 +58,7 @@ constexpr UINT_PTR kTrayRetryTimer = 1;
 constexpr UINT_PTR kBackgroundTimer = 2;
 constexpr UINT_PTR kInstalledApplicationsChangeTimer = 3;
 constexpr UINT_PTR kInstalledApplicationsRetryTimer = 4;
+constexpr UINT_PTR kTrayControlsTimer = 5;
 constexpr std::size_t kMaximumIconSources = 128;
 
 float ScaleForDpi(float value, UINT dpi) {
@@ -174,6 +174,7 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
 
   iconTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 2, 32);
   discoveryTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 1, 1);
+  trayTasks_ = std::make_unique<BackgroundTasks>(window_, kMessageBackgroundComplete, 1, 2);
   installedAppsWatcher_ = std::make_unique<InstalledAppsWatcher>();
   taskbarCreatedMessage_ = RegisterWindowMessageW(L"TaskbarCreated");
   if (taskbarCreatedMessage_ == 0) {
@@ -540,6 +541,10 @@ void LauncherApp::ShowNotification(std::wstring_view title, std::wstring_view me
 }
 
 void LauncherApp::ShowLauncher() {
+  trayMenuCancellation_.request_stop();
+  ++trayMenuGeneration_;
+  trayMenuActive_ = false;
+  pendingTrayMenu_.reset();
   pendingPowerAction_.reset();
   menuPage_ = MenuPage::Main;
   UpdateSearchHint();
@@ -559,9 +564,18 @@ void LauncherApp::ShowLauncher() {
   SetFocus(edit_);
   SendMessageW(edit_, EM_SETSEL, 0, -1);
   InvalidateRect(window_, nullptr, FALSE);
+  RequestTrayControls();
+  if (!SetTimer(window_, kTrayControlsTimer, 1000, nullptr)) {
+    launchError_ = L"Could not refresh tray controls. Reopen Launcher to try again.";
+    ResizeAndPosition(false);
+    InvalidateRect(window_, nullptr, FALSE);
+  }
 }
 
 void LauncherApp::HideLauncher() {
+  pendingTrayMenu_.reset();
+  trayMenuCancellation_.request_stop();
+  KillTimer(window_, kTrayControlsTimer);
   pendingPowerAction_.reset();
   if (IsWindowVisible(window_)) {
     ShowWindow(window_, SW_HIDE);
@@ -612,6 +626,10 @@ void LauncherApp::RebuildCatalog() {
   std::wstring selectedTarget;
   std::wstring selectedLaunchKey;
   std::optional<std::wstring> selectedIdentity;
+  const auto selectedTray = selectedResult_ < searchResults_.size() &&
+      searchResults_[selectedResult_].kind == LauncherResult::Kind::TrayControl &&
+      searchResults_[selectedResult_].application < trayControls_.items.size()
+      ? std::optional(trayControls_.items[searchResults_[selectedResult_].application]) : std::nullopt;
   const auto selectedMenuItem = selectedResult_ < searchResults_.size() &&
       searchResults_[selectedResult_].kind == LauncherResult::Kind::Command
       ? std::optional(searchResults_[selectedResult_].command) : std::nullopt;
@@ -646,6 +664,14 @@ void LauncherApp::RebuildCatalog() {
     }
   }
   EnsureSelectionVisible();
+  if (selectedTray) {
+    for (std::size_t index = 0; index < searchResults_.size(); ++index) {
+      const auto& result = searchResults_[index];
+      if (result.kind == LauncherResult::Kind::TrayControl &&
+          selectedTray->SameRegistration(trayControls_.items[result.application])) { selectedResult_ = index; break; }
+    }
+    EnsureSelectionVisible();
+  }
 }
 
 void LauncherApp::UpdateInstalledApplicationsWatcher() {
@@ -779,6 +805,7 @@ void LauncherApp::StartBackgroundTimer() {
 }
 
 void LauncherApp::ProcessBackgroundResults() {
+  trayTasks_->Dispatch();
   discoveryTasks_->Dispatch();
   const std::size_t completedIcons = iconTasks_->Dispatch();
   if (completedIcons != 0 && IsWindowVisible(window_)) {
@@ -800,7 +827,7 @@ void LauncherApp::ProcessBackgroundResults() {
       InvalidateRect(window_, nullptr, FALSE);
     }
   }
-  if (!discoveryTasks_->HasPending() && !iconTasks_->HasPending()) {
+  if (!discoveryTasks_->HasPending() && !iconTasks_->HasPending() && !trayTasks_->HasPending()) {
     KillTimer(window_, kBackgroundTimer);
   }
 }
@@ -813,13 +840,79 @@ void LauncherApp::StopBackgroundTasks() {
   discoveryCancellation_.request_stop();
   if (iconTasks_) iconTasks_->Stop();
   if (discoveryTasks_) discoveryTasks_->Stop();
+  trayMenuCancellation_.request_stop();
+  if (trayTasks_) trayTasks_->Stop();
   if (window_) {
     KillTimer(window_, kBackgroundTimer);
+    KillTimer(window_, kTrayControlsTimer);
     KillTimer(window_, kTrayRetryTimer);
     KillTimer(window_, kInstalledApplicationsChangeTimer);
     KillTimer(window_, kInstalledApplicationsRetryTimer);
     discoveryRetryPending_ = false;
   }
+}
+
+void LauncherApp::RequestTrayControls() {
+  if (trayRefreshPending_ || trayMenuActive_ || !trayTasks_) return;
+  trayRefreshPending_ = trayTasks_->Submit([this] {
+    auto snapshot = ReadTrayControls();
+    return [this, snapshot = std::move(snapshot)]() mutable {
+      trayRefreshPending_ = false;
+      ApplyTrayControls(std::move(snapshot));
+    };
+  });
+  if (trayRefreshPending_) StartBackgroundTimer();
+}
+
+void LauncherApp::ApplyTrayControls(TrayControlsSnapshot snapshot) {
+  if (snapshot.host == trayControls_.host && snapshot.hostSession == trayControls_.hostSession &&
+      snapshot.revision == trayControls_.revision && snapshot.connected == trayControls_.connected) {
+    trayControls_.error = std::move(snapshot.error);
+    return;
+  }
+  const auto previous = selectedResult_ < searchResults_.size()
+      ? std::optional(searchResults_[selectedResult_]) : std::nullopt;
+  const auto selected = previous && previous->kind == LauncherResult::Kind::TrayControl &&
+      previous->application < trayControls_.items.size()
+      ? std::optional(trayControls_.items[previous->application]) : std::nullopt;
+  const auto first = firstVisibleResult_;
+  trayControls_ = std::move(snapshot);
+  trayIcons_.clear();
+  UpdateResults();
+  if (previous) for (std::size_t index = 0; index < searchResults_.size(); ++index) {
+    const auto& result = searchResults_[index];
+    if ((selected && result.kind == LauncherResult::Kind::TrayControl &&
+            selected->SameRegistration(trayControls_.items[result.application])) ||
+        (!selected && result == *previous)) {
+      selectedResult_ = index; firstVisibleResult_ = first; EnsureSelectionVisible(); break;
+    }
+  }
+}
+
+void LauncherApp::ExecutePendingTrayMenu() {
+  if (!pendingTrayMenu_ || trayMenuActive_ || !IsWindowVisible(window_)) { pendingTrayMenu_.reset(); return; }
+  auto request = std::move(*pendingTrayMenu_);
+  pendingTrayMenu_.reset();
+  trayMenuCancellation_ = std::stop_source{};
+  const auto cancelled = trayMenuCancellation_.get_token();
+  const auto generation = ++trayMenuGeneration_;
+  AllowSetForegroundWindow(request.item.pid);
+  trayMenuActive_ = trayTasks_->Submit([this, request = std::move(request), cancelled, generation] {
+    std::wstring error;
+    const bool accepted = RequestTrayControlMenu(request.item, request.anchor, cancelled, error);
+    return [this, accepted, error = std::move(error), cancelled, generation] {
+      if (generation != trayMenuGeneration_) return;
+      trayMenuActive_ = false;
+      if (accepted) { HideLauncher(); return; }
+      if (cancelled.stop_requested()) return;
+      launchError_ = error;
+      RequestTrayControls();
+      ResizeAndPosition(false);
+      InvalidateRect(window_, nullptr, FALSE);
+    };
+  });
+  if (trayMenuActive_) StartBackgroundTimer();
+  else { launchError_ = L"Could not request the tray menu. Try again."; ResizeAndPosition(false); InvalidateRect(window_, nullptr, FALSE); }
 }
 
 void LauncherApp::UpdateResults() {
@@ -835,6 +928,18 @@ void LauncherApp::UpdateResults() {
       ? RankApplications(catalog_, query) : std::vector<std::size_t>{};
   menuItems_ = MenuItems(menuPage_, query);
   searchResults_ = RankLauncherResults(hasValidCatalog_ ? catalog_ : Catalog{}, menuPage_, query);
+  if (menuPage_ == MenuPage::Main && queryHasText_) {
+    Catalog trayCatalog;
+    for (const auto& item : trayControls_.items) {
+      ApplicationEntry entry;
+      entry.name = item.name;
+      entry.target = item.processPath;
+      entry.aliases = {L"tray controls", L"tray menu"};
+      trayCatalog.applications.push_back(std::move(entry));
+    }
+    for (const auto index : RankApplications(trayCatalog, query))
+      searchResults_.push_back({LauncherResult::Kind::TrayControl, index, MenuItemId::System});
+  }
   selectedResult_ = 0;
   firstVisibleResult_ = 0;
   wheelRemainder_ = 0;
@@ -926,9 +1031,26 @@ std::optional<std::size_t> LauncherApp::ResultAtY(float y) const {
 }
 
 void LauncherApp::LaunchSelection() {
-  if (pendingLaunch_ || pendingPowerAction_ || powerActionActive_) return;
+  if (pendingLaunch_ || pendingPowerAction_ || powerActionActive_ || pendingTrayMenu_ || trayMenuActive_) return;
   if (selectedResult_ >= searchResults_.size()) return;
   const auto selected = searchResults_[selectedResult_];
+  if (selected.kind == LauncherResult::Kind::TrayControl) {
+    if (selected.application >= trayControls_.items.size() || !IsWindowVisible(window_)) return;
+    EnsureSelectionVisible();
+    const auto top = ResultsTop() + static_cast<float>(selectedResult_ - firstVisibleResult_) * visuals::kResultHeight +
+        (visuals::kResultHeight - visuals::kApplicationIconSize) / 2;
+    POINT point{ScaleForDpiInt(visuals::kApplicationIconLeft, dpi_), ScaleForDpiInt(top, dpi_)};
+    if (!ClientToScreen(window_, &point)) return;
+    const auto size = ScaleForDpiInt(visuals::kApplicationIconSize, dpi_);
+    pendingTrayMenu_ = PendingTrayMenu{trayControls_.items[selected.application],
+        {point.x, point.y, point.x + size, point.y + size}};
+    if (PostMessageW(window_, kMessageTrayControlMenu, 0, 0)) return;
+    pendingTrayMenu_.reset();
+    launchError_ = L"Could not queue the tray menu. Try again.";
+    ResizeAndPosition(false);
+    InvalidateRect(window_, nullptr, FALSE);
+    return;
+  }
   if (selected.kind == LauncherResult::Kind::Command) {
     const MenuItemId item = selected.command;
     if (item == MenuItemId::System) {
@@ -1003,7 +1125,6 @@ void LauncherApp::ExecutePendingLaunch() {
 }
 
 bool LauncherApp::LaunchApplication(const ApplicationEntry& application, std::wstring& error) {
-  if (TryActivateRunningUgs(application)) return true;
   std::wstring file = application.target;
   std::wstring parameters = JoinArguments(application.arguments);
   constexpr std::wstring_view appsPrefix = L"shell:AppsFolder\\";
@@ -1193,12 +1314,21 @@ std::wstring LauncherApp::DiagnosticReport(std::wstring_view lookup) const {
   for (const auto& app : installedApplications_) add(app);
   root.SetNamedValue(L"entries", entries);
   root.SetNamedValue(L"lookup", string(lookup));
+  root.SetNamedValue(L"trayConnected", JsonValue::CreateBooleanValue(trayControls_.connected));
+  root.SetNamedValue(L"trayPending", JsonValue::CreateBooleanValue(trayRefreshPending_));
+  root.SetNamedValue(L"trayError", string(trayControls_.error));
   JsonArray results;
   for (const auto& result : searchResults_) {
     JsonObject item;
     const bool command = result.kind == LauncherResult::Kind::Command;
-    item.SetNamedValue(L"kind", string(command ? L"command" : L"application"));
-    item.SetNamedValue(L"label", string(command ? MenuItemLabel(result.command) : catalog_.applications[result.application].name));
+    const bool tray = result.kind == LauncherResult::Kind::TrayControl;
+    item.SetNamedValue(L"kind", string(tray ? L"tray-controls" : command ? L"command" : L"application"));
+    item.SetNamedValue(L"label", string(tray ? trayControls_.items[result.application].name :
+        command ? MenuItemLabel(result.command) : catalog_.applications[result.application].name));
+    if (tray) {
+      item.SetNamedValue(L"token", JsonValue::CreateNumberValue(trayControls_.items[result.application].token));
+      item.SetNamedValue(L"pid", JsonValue::CreateNumberValue(trayControls_.items[result.application].pid));
+    }
     results.Append(item);
   }
   root.SetNamedValue(L"results", results);
@@ -1236,6 +1366,7 @@ HRESULT LauncherApp::EnsureRenderTarget() {
 }
 
 void LauncherApp::ReleaseDeviceResources() {
+  trayIcons_.clear();
   iconCache_.clear();
   iconAttempted_.clear();
   renderTarget_.Reset();
@@ -1340,9 +1471,13 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
                 visuals::kWindowWidth-visuals::kContentRight,top+visuals::kResultHeight),
             mutedBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
       } else {
-        if (result.application >= catalog_.applications.size()) continue;
-        label = catalog_.applications[result.application].name;
-        const auto icon = applicationIcons ? GetApplicationIcon(result.application) : ComPtr<ID2D1Bitmap>{};
+        const bool tray = result.kind == LauncherResult::Kind::TrayControl;
+        if (result.application >= (tray ? trayControls_.items.size() : catalog_.applications.size())) continue;
+        label = tray ? trayControls_.items[result.application].name : catalog_.applications[result.application].name;
+        const auto icon = applicationIcons ? (tray ? GetTrayControlIcon(result.application) : GetApplicationIcon(result.application)) : ComPtr<ID2D1Bitmap>{};
+        if (tray) target->DrawTextW(L"Tray controls", 13, messageTextFormat_.Get(),
+            D2D1::RectF(visuals::kWindowWidth-120,top,visuals::kWindowWidth-visuals::kContentRight,top+visuals::kResultHeight),
+            mutedBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
         const float iconTop = top+(visuals::kResultHeight-visuals::kApplicationIconSize)/2;
         const auto bounds = D2D1::RectF(visuals::kApplicationIconLeft,iconTop,
             visuals::kApplicationIconLeft+visuals::kApplicationIconSize,iconTop+visuals::kApplicationIconSize);
@@ -1362,8 +1497,8 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
       }
       target->DrawTextW(label.data(),static_cast<UINT32>(label.size()),resultTextFormat_.Get(),
           D2D1::RectF(visuals::kResultTextLeft,top,
-              visuals::kWindowWidth-(result.kind == LauncherResult::Kind::Command &&
-                  result.command != MenuItemId::System && result.command != MenuItemId::Appearance ? 120.0f : 40.0f),
+              visuals::kWindowWidth-(result.kind == LauncherResult::Kind::TrayControl || (result.kind == LauncherResult::Kind::Command &&
+                  result.command != MenuItemId::System && result.command != MenuItemId::Appearance) ? 130.0f : 40.0f),
               top+visuals::kResultHeight),
           textBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
@@ -1381,7 +1516,9 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
   }
   const float footerTop = ResultsTop() + static_cast<float>(VisibleResultRows()) * visuals::kResultHeight +
       (status.empty() ? 0.0f : visuals::kStatusHeight);
-  constexpr std::wstring_view hints = L"↑↓ navigate    ↵ open";
+  const bool traySelected = selectedResult_ < searchResults_.size() &&
+      searchResults_[selectedResult_].kind == LauncherResult::Kind::TrayControl;
+  const std::wstring_view hints = traySelected ? L"↑↓ navigate    ↵ app menu" : L"↑↓ navigate    ↵ open";
   target->DrawTextW(hints.data(), static_cast<UINT32>(hints.size()), hintTextFormat_.Get(),
       D2D1::RectF(18.0f, footerTop, visuals::kWindowWidth - 64.0f, footerTop + visuals::kFooterHeight),
       mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -1389,6 +1526,19 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
       D2D1::RectF(visuals::kWindowWidth - 46.0f, footerTop,
           visuals::kWindowWidth - 18.0f, footerTop + visuals::kFooterHeight),
       mutedBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+ComPtr<ID2D1Bitmap> LauncherApp::GetTrayControlIcon(std::size_t index) {
+  if (index >= trayControls_.items.size()) return {};
+  trayIcons_.resize(trayControls_.items.size());
+  const auto& image = trayControls_.items[index].image;
+  if (!trayIcons_[index] && !image.pixels.empty()) {
+    const auto properties = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(image.width, image.height), image.pixels.data(), image.width * 4,
+        properties, &trayIcons_[index]))) return {};
+  }
+  return trayIcons_[index];
 }
 
 ComPtr<ID2D1Bitmap> LauncherApp::GetApplicationIcon(std::size_t applicationIndex) {
@@ -1562,6 +1712,9 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case kMessageLaunchSelection:
       ExecutePendingLaunch();
       return 0;
+    case kMessageTrayControlMenu:
+      ExecutePendingTrayMenu();
+      return 0;
     case WM_SETTINGCHANGE:
       blade_appearance_reload();
       [[fallthrough]];
@@ -1717,7 +1870,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
       if (!benchmarkPresentedEvent_) return 0;
       LRESULT state = kBenchmarkAvailable;
       if (!discoveryTasks_ || !iconTasks_ || discoveryPending_ || discoveryAgain_ || discoveryChangePending_ || discoveryRetryPending_ ||
-          discoveryTasks_->HasPending() || iconTasks_->HasPending() ||
+          discoveryTasks_->HasPending() || iconTasks_->HasPending() || trayTasks_->HasPending() ||
           (IsWindowVisible(window_) && GetUpdateRect(window_, nullptr, FALSE))) {
         state |= kBenchmarkPending;
       }
@@ -1726,7 +1879,9 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_TIMER:
-      if (wParam == kTrayRetryTimer) {
+      if (wParam == kTrayControlsTimer) {
+        if (IsWindowVisible(window_)) RequestTrayControls();
+      } else if (wParam == kTrayRetryTimer) {
         AddTrayIcon();
       } else if (wParam == kBackgroundTimer) {
         ProcessBackgroundResults();

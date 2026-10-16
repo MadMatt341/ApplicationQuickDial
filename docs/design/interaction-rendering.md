@@ -114,24 +114,34 @@ A successful launch hides the launcher. A failure stays visible and adds an erro
 
 Sign out uses EWX_LOGOFF for the current session, without a shutdown privilege or force flags. Windows handles save-work negotiation. This action also activates a prepared Blade update at the next sign-in. Automated launcher checks substitute dispatch and verify its independent selection and visible failure; actual sign-out/sign-in remains an explicitly authorized desktop acceptance check.
 
-### UGS hidden startup compatibility
+### Tray controls
 
-UGS can start with `-RestoreState` and keep its startup window hidden.
-In this state, UGS can finish its startup tasks without creating its main window.
-Its normal second-instance signal does not open that startup window.
+Search also includes separate **Tray controls** results for running applications registered with Blade's notification tray.
+These results use the application tooltip, process filename, and `tray controls` or `tray menu` search aliases.
+The result shows the application's icon and a **Tray controls** label.
+Normal application results keep their Windows Shell launch behavior.
 
-For an `UnrealGameSync.exe` command with no arguments, Launcher first checks the
-[Blade notification tray](https://github.com/MadMatt341/WindowManager/blob/main/docs/notification-tray.md#rail-transport).
-It selects one registration with the UGS tooltip and the correct process image.
-The image path must be the command path or `Latest/UnrealGameSync.exe` under the same installation root as `Launcher/UnrealGameSync.exe`.
-Launcher sends the existing `double` action with the current icon rectangle.
-UGS then opens its startup window or main window through its own callback.
+Selecting a tray result requests the application's own menu through the
+[tray host contract](https://github.com/MadMatt341/WindowManager/blob/main/docs/notification-tray.md#general-application-recovery).
+The visible result icon supplies the menu anchor.
+The application controls menu contents and the effects of its commands.
+Opening Launcher, reading registrations, and searching send no application callbacks.
+This behavior applies to registrations without application-name rules.
 
-Commands with arguments use the normal Shell launch path.
-Launcher reads a selected `.lnk` file again before this check to keep changed shortcut arguments.
-Shortcuts with a specified display state other than normal also use the Shell launch path.
-A missing host, incorrect response, missing rectangle, rejected action, or more than one applicable registration also uses the normal launch path.
-Each tray call has a 250-millisecond limit.
+One background worker reads snapshots and sends bounded menu requests.
+It has two queue slots and a 250-millisecond limit for each native call.
+Visible Launcher windows refresh registrations once per second.
+Search preserves an existing selection when a snapshot changes.
+A missing host or unsupported interface gives no tray results.
+Normal application launching remains available.
 
-This optional connection does not change other applications or require Blade for standalone Launcher use.
-Direct shortcut launches outside Launcher do not use this compatibility path.
+Selection captures the registration and posts an internal message before it sends a request.
+Launcher accepts one menu request at a time.
+Dismissal cancels a request before dispatch.
+The worker checks cancellation before sending the action.
+It reads a new snapshot and checks the host HWND, host session, token, and process ID.
+A missing registration or rejected request keeps Launcher open with an error; it does not select another application.
+
+Applications can register a tray icon before they create a main window.
+The tray menu gives access when an application ignores its normal second-instance signal.
+Windows owns Shell launch behavior; applications own their startup completion and hidden windows.
