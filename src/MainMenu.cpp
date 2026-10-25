@@ -13,6 +13,7 @@ std::wstring_view MenuItemLabel(MenuItemId item) {
   switch (item) {
     case MenuItemId::System: return L"System";
     case MenuItemId::Appearance: return L"Appearance";
+    case MenuItemId::Startup: return L"Startup";
     case MenuItemId::ShutDown: return L"Shut down";
     case MenuItemId::Restart: return L"Restart";
     case MenuItemId::SignOut: return L"Sign out";
@@ -22,10 +23,11 @@ std::wstring_view MenuItemLabel(MenuItemId item) {
 
 std::vector<MenuItemId> MenuItems(MenuPage page, std::wstring_view query) {
   const bool empty = std::all_of(query.begin(), query.end(), [](wchar_t c) { return std::iswspace(c); });
-  if (page == MenuPage::Main && empty) return {MenuItemId::System,MenuItemId::Appearance};
+  if (page == MenuPage::Main && empty) return {MenuItemId::System,MenuItemId::Appearance,MenuItemId::Startup};
   if (empty) return {MenuItemId::ShutDown, MenuItemId::Restart, MenuItemId::SignOut};
 
   if (page==MenuPage::Main && (IsExactMenuQuery(MenuItemId::Appearance,query) || FoldCase(query)==L"theme")) return {MenuItemId::Appearance};
+  if (page==MenuPage::Main && IsExactMenuQuery(MenuItemId::Startup,query)) return {MenuItemId::Startup};
 
   // Reuse the app search contract for names and aliases inside this section.
   static const Catalog commands = [] {
@@ -56,6 +58,7 @@ bool IsExactMenuQuery(MenuItemId item, std::wstring_view query) {
   if (text == FoldCase(MenuItemLabel(item))) return true;
   switch (item) {
     case MenuItemId::Appearance: return text == L"theme";
+    case MenuItemId::Startup: return text == L"startup apps" || text == L"autostart";
     case MenuItemId::ShutDown: return text == L"shutdown" || text == L"power off";
     case MenuItemId::Restart: return text == L"reboot";
     case MenuItemId::SignOut: return text == L"log off" || text == L"logoff" || text == L"logout";

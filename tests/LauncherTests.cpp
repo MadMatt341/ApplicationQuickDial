@@ -310,7 +310,7 @@ class LauncherAppTestAccess {
       if (!condition) { ++failures; std::cerr << "FAILED: " << description << '\n'; }
     };
     app.ShowLauncher();
-    check(app.VisibleResultRows() == 2 && app.menuItems_ == std::vector{MenuItemId::System,MenuItemId::Appearance},
+    check(app.VisibleResultRows() == 3 && app.menuItems_ == std::vector{MenuItemId::System,MenuItemId::Appearance,MenuItemId::Startup},
           "empty search displays the System row below the divider");
     SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);
     SendMessageW(app.edit_, WM_KEYDOWN, VK_DOWN, 0);

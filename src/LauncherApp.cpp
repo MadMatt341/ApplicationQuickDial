@@ -1,4 +1,5 @@
 #include "blade_appearance.h"
+#include "blade_startup.h"
 #include "LauncherApp.h"
 
 #include "AppMessages.h"
@@ -1061,6 +1062,12 @@ void LauncherApp::LaunchSelection() {
       SetFocus(edit_);
     } else if(item==MenuItemId::Appearance) {
       blade_appearance_edit();
+    } else if(item==MenuItemId::Startup) {
+      if (!blade_startup_edit()) {
+        launchError_ = L"Could not open Startup. Check the Blade diagnostic log.";
+        ResizeAndPosition(false);
+        InvalidateRect(window_, nullptr, FALSE);
+      } else HideLauncher();
     } else {
       pendingPowerAction_ = item;
       if (PostMessageW(window_, kMessageSystemPowerAction, 0, 0)) return;
@@ -1464,7 +1471,7 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
       if (result.kind == LauncherResult::Kind::Command) {
         label = MenuItemLabel(result.command);
         DrawSystemIcon(*d2dFactory_.Get(),*target,result.command,D2D1::Point2F(28,center),*mutedBrush.Get(),dpi_);
-        const bool navigation = result.command == MenuItemId::System || result.command == MenuItemId::Appearance;
+        const bool navigation = result.command == MenuItemId::System || result.command == MenuItemId::Appearance || result.command == MenuItemId::Startup;
         const std::wstring_view badge = navigation ? L"›" : L"System action";
         target->DrawTextW(badge.data(),static_cast<UINT32>(badge.size()),messageTextFormat_.Get(),
             D2D1::RectF(visuals::kWindowWidth-(navigation ? 26.0f : 110.0f),top,
@@ -1498,7 +1505,7 @@ void LauncherApp::DrawContent(ID2D1RenderTarget* target, bool applicationIcons) 
       target->DrawTextW(label.data(),static_cast<UINT32>(label.size()),resultTextFormat_.Get(),
           D2D1::RectF(visuals::kResultTextLeft,top,
               visuals::kWindowWidth-(result.kind == LauncherResult::Kind::TrayControl || (result.kind == LauncherResult::Kind::Command &&
-                  result.command != MenuItemId::System && result.command != MenuItemId::Appearance) ? 130.0f : 40.0f),
+                  result.command != MenuItemId::System && result.command != MenuItemId::Appearance && result.command != MenuItemId::Startup) ? 130.0f : 40.0f),
               top+visuals::kResultHeight),
           textBrush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }

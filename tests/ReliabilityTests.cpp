@@ -53,8 +53,13 @@ void TestPowerSearch() {
     Check(std::none_of(results.begin(), results.end(), [](const auto& item) { return item.kind == LauncherResult::Kind::Command; }),
         "short and fuzzy root queries never produce power commands");
   }
+  for (const auto query : {L"startup", L" STARTUP APPS ", L"autostart"}) {
+    const auto result = RankLauncherResults(catalog, MenuPage::Main, query);
+    Check(!result.empty() && result.front().kind == LauncherResult::Kind::Command &&
+        result.front().command == MenuItemId::Startup, "explicit startup queries select the Startup page");
+  }
   const auto empty = RankLauncherResults(catalog, MenuPage::Main, L"");
-  Check(empty.size() == 2 && empty[0].command == MenuItemId::System && empty[1].command == MenuItemId::Appearance, "empty root retains System navigation");
+  Check(empty.size() == 3 && empty[0].command == MenuItemId::System && empty[1].command == MenuItemId::Appearance && empty[2].command == MenuItemId::Startup, "empty root retains System navigation");
 }
 void TestRefresh() {
   quickdial::RefreshPolicy policy;

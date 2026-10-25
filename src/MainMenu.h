@@ -7,7 +7,7 @@
 namespace quickdial {
 
 enum class MenuPage { Main, System };
-enum class MenuItemId { System, Appearance, ShutDown, Restart, SignOut };
+enum class MenuItemId { System, Appearance, Startup, ShutDown, Restart, SignOut };
 
 // Built-in menu entries are commands, never application catalog targets.
 std::wstring_view MenuItemLabel(MenuItemId item);

@@ -34,13 +34,23 @@ Every edit-control `EN_CHANGE` notification calls `UpdateResults`. The query is 
 | 4-7 | the same four match classes on an alias |
 | 8-11 | the same four match classes on an AppUserModelID, target filename, or custom URI scheme |
 
-Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty or whitespace-only query returns no application results and shows System and Appearance rows below the search divider. Typing on the main page searches typed application and command results; clearing the query restores the main rows. Appearance opens the shared user appearance file in Notepad. System opens a submenu with Shut down, Restart and Sign out. Its search field filters those actions by name or aliases (`shutdown`, `power off`, `reboot`), using the same ranking rules. System entries remain available without a valid application catalog. The UI retains all ranked matches and renders at most six rows from a scrollable viewport. Query changes reset the viewport. Keyboard navigation keeps selection visible; wheel input accumulates partial deltas and follows the Windows scroll-line preference. Mouse hit testing accounts for the viewport offset.
+Aliases are considered only when the name does not match, and language-neutral identifiers only when neither the name nor an alias matches. Identifier punctuation and camel case are treated as word boundaries. Web and file URI schemes are excluded because they are not application names. Results are stable-sorted by score, so equal scores retain catalog order. An empty or whitespace-only query returns no application results and shows System, Appearance, and Startup rows below the search divider. Typing on the main page searches typed application and command results; clearing the query restores the main rows. Appearance opens the shared user appearance file in Notepad. System opens a submenu with Shut down, Restart and Sign out. Its search field filters those actions by name or aliases (`shutdown`, `power off`, `reboot`), using the same ranking rules. System entries remain available without a valid application catalog. The UI retains all ranked matches and renders at most six rows from a scrollable viewport. Query changes reset the viewport. Keyboard navigation keeps selection visible; wheel input accumulates partial deltas and follows the Windows scroll-line preference. Mouse hit testing accounts for the viewport offset.
 
 F10 opens the launcher menu without needing a notification tray. Up and Down wrap around the result list. Enter or a left click activates the selected app or built-in menu item. Escape and the clickable back arrow in the System header return to the main page and clear the submenu filter; Escape on the main page hides the window. Every reopening starts on the main page. Changing the query resets selection to the first result.
 
 Enter and Escape ignore auto-repeat, so one held key cannot enter System and then activate a power action, or return to main and immediately dismiss it. The edit subclass handles Enter and Escape on `WM_KEYDOWN` and consumes their queued `WM_CHAR` messages so the single-line edit control does not play an invalid-character beep.
 
 Root search recognizes `shutdown`, `power off`, `restart`, `reboot`, and sign-out aliases. Exact command labels/aliases precede apps; partial command matches require at least three non-whitespace characters and follow app matches. Power commands have no fuzzy matching. Result dispatch, painting, scrolling, hit testing and refresh selection use one typed `LauncherResult` vector, preventing an app index from being mistaken for a command. Command rows display “System action”. Empty search retains System navigation.
+
+## Startup page
+
+The main menu has a Startup entry.
+The exact queries `startup`, `startup apps`, and `autostart` select this entry before application results.
+Selection opens the account Startup page and closes Launcher after a successful process request.
+A failed request keeps Launcher open with an error.
+The shell platform library owns the page, Windows adapters, and Blade startup settings.
+Launcher does not change startup registrations.
+The [Startup contract](https://github.com/MadMatt341/WindowManager/blob/main/docs/startup-apps.md) gives controls, preservation rules, and checks.
 
 ## Window and rendering
 

@@ -17,6 +17,11 @@ void DrawSystemIcon(ID2D1Factory& factory, ID2D1RenderTarget& target, MenuItemId
     for(float y : {-7.0f,0.0f,7.0f}) {line(-10,y,10,y); target.DrawEllipse(D2D1::Ellipse(point(y==0 ? 5.0f : -4.0f,y),2.5f,2.5f),&brush,stroke);}
     return;
   }
+  if (item == MenuItemId::Startup) {
+    line(-8,8,-8,-8); line(-8,-8,8,-8); line(1,-2,8,-8); line(8,-8,8,-1);
+    line(-2,8,8,8);
+    return;
+  }
   if (item == MenuItemId::System) {
     target.DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(center.x-11,center.y-9,center.x+11,center.y+5),2,2), &brush,stroke);
     line(0,5,0,10); line(-6,10,6,10);

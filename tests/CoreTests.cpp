@@ -402,7 +402,7 @@ void TestMainMenu() {
   using quickdial::MenuItemId;
   using quickdial::MenuPage;
   const auto root = quickdial::MenuItems(MenuPage::Main, L"   ");
-  Check(root == std::vector{MenuItemId::System,MenuItemId::Appearance}, "empty main menu offers System and Appearance independently of the app catalog");
+  Check(root == std::vector{MenuItemId::System,MenuItemId::Appearance,MenuItemId::Startup}, "empty main menu offers System and Appearance independently of the app catalog");
   Check(quickdial::MenuItems(MenuPage::Main, L"app").empty(), "typing on the main page keeps application search scoped to apps");
   Check(quickdial::MenuItems(MenuPage::System, L"") == std::vector{MenuItemId::ShutDown, MenuItemId::Restart, MenuItemId::SignOut},
         "System lists shut down, restart and sign out");
