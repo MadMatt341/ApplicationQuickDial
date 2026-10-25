@@ -6,6 +6,7 @@
 #include "RefreshPolicy.h"
 #include <windows.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <wrl/client.h>
 #include <filesystem>
 #include <algorithm>
@@ -210,6 +211,111 @@ void TestIndexedShortcutMerge() {
   Check(hiddenMerge.applications.size() == 1 && hiddenMerge.applications[0].source == ApplicationSource::AppsFolder,
       "excluded physical shortcuts do not suppress a usable indexed entry");
 }
+void TestDuplicateLaunchPatterns() {
+  using namespace quickdial;
+  const auto shortcut = [](std::wstring name, std::wstring link, std::wstring target,
+                           std::wstring args, std::wstring directory, std::wstring id) {
+    auto app = App(std::move(name), std::move(link), ApplicationSource::UserStartMenu);
+    app.resolvedTarget = std::move(target); app.shortcutArguments = std::move(args);
+    app.shortcutWorkingDirectory = std::move(directory); app.identity = std::move(id);
+    app.launchKey = EquivalentLaunchKey(app.resolvedTarget, app.shortcutArguments, app.shortcutWorkingDirectory);
+    return app;
+  };
+  const auto merge = [](Catalog configured, std::vector<ApplicationEntry> apps) {
+    for (auto& app : apps)
+      app.launchKey = EquivalentLaunchKey(app.resolvedTarget, app.shortcutArguments, app.shortcutWorkingDirectory);
+    return MergeInstalledApplications(std::move(configured), std::move(apps));
+  };
+  const auto browser = shortcut(L"Browser", L"browser.lnk", L"C:\\Brave\\brave.exe",
+      L"--source-shortcut-location=start-menu", L"C:\\Brave", L"Brave");
+  auto indexed = browser; indexed.source = ApplicationSource::AppsFolder;
+  indexed.target = L"shell:AppsFolder\\Brave"; indexed.shortcutArguments.clear();
+  indexed.shortcutWorkingDirectory.clear(); indexed.launchKey.clear();
+  for (const auto& inventory : {std::vector{browser, indexed}, std::vector{indexed, browser}}) {
+    const auto merged = merge({}, inventory);
+    Check(merged.applications.size() == 1 && merged.applications[0].target == L"browser.lnk" &&
+        merged.applications[0].shortcutArguments == L"--source-shortcut-location=start-menu",
+        "Chromium launch metrics do not add an indexed copy or change the retained shortcut command");
+  }
+  for (const auto* arguments : {L"--profile-directory=Work", L"--app-id=remote", L"--incognito",
+       L"https://example.invalid/Work", L"--source-shortcut-location=unknown",
+       L"-- --source-shortcut-location=start-menu"}) {
+    auto variant = browser; variant.target = L"variant.lnk"; variant.shortcutArguments = arguments;
+    const auto variants = merge({}, {browser, indexed, variant});
+    Check(variants.applications.size() == 2 &&
+        std::any_of(variants.applications.begin(), variants.applications.end(), [](const auto& app) { return app.target == L"browser.lnk"; }) &&
+        std::any_of(variants.applications.begin(), variants.applications.end(), [](const auto& app) { return app.target == L"variant.lnk"; }),
+        "browser profiles, web apps, private mode, URLs, unknown flags and positional arguments remain distinct");
+  }
+  auto chrome = shortcut(L"Chrome Remote Desktop", L"chrome-remote.lnk", L"C:\\Chrome\\chrome_proxy.exe",
+      L"--profile-directory=Default --app-id=remote", L"", L"shared-browser-app-id");
+  auto brave = chrome; brave.target = L"brave-remote.lnk"; brave.resolvedTarget = L"C:\\Brave\\chrome_proxy.exe";
+  Check(merge({}, {brave, chrome}).applications.size() == 2,
+      "Chrome and Brave web apps remain separate even if their names, arguments and app IDs collide");
+  auto profile = chrome; profile.target = L"work-remote.lnk";
+  profile.shortcutArguments = L"--profile-directory=Work --app-id=remote";
+  auto anotherApp = chrome; anotherApp.target = L"another-app.lnk";
+  anotherApp.shortcutArguments = L"--profile-directory=Default --app-id=another";
+  Check(merge({}, {chrome, profile, anotherApp}).applications.size() == 3,
+      "different profiles and web-app IDs in one browser remain separate");
+  Check(EquivalentLaunchKey(L"C:\\tool.exe", L"--source-shortcut-location=start-menu") !=
+      EquivalentLaunchKey(L"C:\\tool.exe", L""), "Chromium metrics normalization never applies to unrelated executables");
+  Check(EquivalentLaunchKey(L"https://example.invalid/chrome.exe", L"--source-shortcut-location=start-menu") !=
+      EquivalentLaunchKey(L"https://example.invalid/chrome.exe", L""), "a URL ending in a browser filename is not a browser command");
+  auto manual = App(L"My browser", L"C:\\Brave\\brave.exe", ApplicationSource::Manual);
+  manual.arguments = {L"--source-shortcut-location=start-menu"}; manual.workingDirectory = L"C:\\Brave";
+  Catalog configured; configured.applications = {manual};
+  const auto manualMerge = merge(configured, {browser});
+  Check(manualMerge.applications.size() == 1 && manualMerge.applications[0].name == L"My browser",
+      "configured argument vectors use the same command identity and retain precedence over equivalent discovered shortcuts");
+
+  const auto updater = shortcut(L"Chat", L"z-stable-chat.lnk", L"C:\\Chat\\Update.exe",
+      L"--processStart Chat.exe", L"C:\\Chat\\app-1.2.3", L"com.squirrel.Chat.Chat");
+  auto direct = shortcut(L"Chat", L"a-versioned-chat.lnk", L"C:\\Chat\\app-1.2.3\\Chat.exe",
+      L"", L"C:\\Chat\\app-1.2.3", L"com.squirrel.Chat.Chat");
+  for (const auto& inventory : {std::vector{direct, updater}, std::vector{updater, direct}}) {
+    const auto merged = merge({}, inventory);
+    Check(merged.applications.size() == 1 && merged.applications[0].target == L"z-stable-chat.lnk" &&
+        merged.applications[0].resolvedTarget == L"C:\\Chat\\Update.exe",
+        "equivalent Squirrel launch paths retain the stable updater shortcut regardless of enumeration or name order");
+  }
+  auto forwarded = updater; forwarded.target = L"forwarded.lnk";
+  forwarded.shortcutArguments = L"--processStart Chat.exe --process-start-args \"--profile Work\"";
+  auto work = direct; work.target = L"work.lnk"; work.shortcutArguments = L"--profile Work";
+  const auto forwardedMerge = merge({}, {direct, work, updater, forwarded});
+  Check(forwardedMerge.applications.size() == 2 && std::all_of(forwardedMerge.applications.begin(),
+      forwardedMerge.applications.end(), [](const auto& app) { return app.resolvedTarget == L"C:\\Chat\\Update.exe"; }),
+      "Squirrel forwarded arguments merge only with their equivalent direct command and preserve the default variant");
+  for (int change = 0; change < 5; ++change) {
+    auto variant = updater; variant.target = L"different-updater.lnk";
+    if (change == 0) variant.shortcutArguments += L" --unknown";
+    if (change == 1) variant.shortcutArguments = L"--processStart Other.exe";
+    if (change == 2) variant.shortcutWorkingDirectory = L"C:\\Other\\app-1.2.3";
+    if (change == 3) variant.identity = L"unrelated.updater";
+    if (change == 4) variant.shortcutArguments = L"--processStart ..\\Chat.exe";
+    Check(merge({}, {direct, variant}).applications.size() == 2,
+        "unknown updater syntax, other executables, foreign folders, unrelated identities and traversal never merge");
+  }
+  auto oldVersion = direct; oldVersion.target = L"old-version.lnk";
+  oldVersion.resolvedTarget = L"C:\\Chat\\app-1.0.0\\Chat.exe";
+  oldVersion.shortcutWorkingDirectory = L"C:\\Chat\\app-1.0.0";
+  Check(merge({}, {updater, oldVersion}).applications.size() == 2,
+      "an explicitly different application version and working folder remain distinct");
+  Catalog hidden; hidden.hiddenApplications = {updater.target};
+  const auto withoutUpdater = merge(hidden, {updater, direct});
+  Check(withoutUpdater.applications.size() == 1 && withoutUpdater.applications[0].target == direct.target,
+      "an excluded updater never suppresses the available direct shortcut");
+
+  auto url = shortcut(L"Release notes", L"release-notes.url", L"https://example.invalid/Notes?Version=A", L"", L"", L"");
+  auto urlIndex = url; urlIndex.target = L"shell:AppsFolder\\https://example.invalid/Notes?Version=A";
+  urlIndex.source = ApplicationSource::AppsFolder;
+  Check(merge({}, {url, urlIndex}).applications.size() == 1,
+      "physical and indexed entries for the identical URL merge");
+  auto otherUrl = urlIndex; otherUrl.target = L"shell:AppsFolder\\https://example.invalid/notes?Version=A";
+  otherUrl.resolvedTarget = L"https://example.invalid/notes?Version=A";
+  Check(merge({}, {urlIndex, otherUrl}).applications.size() == 2,
+      "URI path case is preserved even when indexed target strings differ only by case");
+}
 void TestRegistration(const std::filesystem::path& directory) {
   using namespace winrt::Windows::Data::Json;
   const auto catalog = directory / L"apps.json";
@@ -257,6 +363,27 @@ void TestShortcuts(const std::filesystem::path& directory) {
   Check(found != discovered.applications.end() && found->resolvedTarget == target.wstring() && found->shortcutArguments == L"--fixture \"two words\"" &&
       found->shortcutWorkingDirectory == directory.wstring(),
       "the original shortcut remains the launch target and its command metadata survives discovery");
+  Microsoft::WRL::ComPtr<IShellLinkW> webLink;
+  Check(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&webLink))),
+      "URL shortcut fixture has a Shell-link provider");
+  const wchar_t* url = L"https://example.invalid/ReleaseNotes?Version=A";
+  PIDLIST_ABSOLUTE urlId = nullptr;
+  const auto parsed = SHParseDisplayName(url, nullptr, &urlId, 0, nullptr);
+  Check(SUCCEEDED(parsed) && urlId && webLink && SUCCEEDED(webLink->SetIDList(urlId)),
+      "URL shortcut fixture stores a real namespace target without a file path");
+  if (urlId) CoTaskMemFree(urlId);
+  if (webLink && SUCCEEDED(parsed)) {
+    Microsoft::WRL::ComPtr<IPersistFile> webFile;
+    const auto urlShortcut = programs / L"Release notes.lnk";
+    Check(SUCCEEDED(webLink.As(&webFile)) && SUCCEEDED(webFile->Save(urlShortcut.c_str(), TRUE)),
+        "namespace URL shortcut is persisted");
+    const auto urls = ReadStartMenuApplications(programs, ApplicationSource::UserStartMenu);
+    const auto foundUrl = std::find_if(urls.applications.begin(), urls.applications.end(),
+        [&](const auto& app) { return app.target == urlShortcut.wstring(); });
+    Check(urls && foundUrl != urls.applications.end() && foundUrl->resolvedTarget == url &&
+        foundUrl->launchKey == EquivalentLaunchKey(url, L""),
+        "namespace URL metadata survives physical shortcut discovery for cross-source duplicate matching");
+  }
   Check(!ReadStartMenuApplications(directory / L"Missing", ApplicationSource::UserStartMenu),
       "source-level directory failure cannot publish a successful partial refresh");
 }
@@ -267,7 +394,8 @@ int main() {
   const auto directory = std::filesystem::path(temp) / (L"BladeLauncherReliability-" + std::to_wstring(GetCurrentProcessId()));
   try {
     std::filesystem::create_directories(directory);
-    TestPowerSearch(); TestRefresh(); TestPartialWatcher(directory); TestSourcesAndMaintenance(); TestIndexedShortcutMerge(); TestRegistration(directory); TestShortcuts(directory);
+    TestPowerSearch(); TestRefresh(); TestPartialWatcher(directory); TestSourcesAndMaintenance(); TestIndexedShortcutMerge();
+    TestDuplicateLaunchPatterns(); TestRegistration(directory); TestShortcuts(directory);
   } catch (const winrt::hresult_error& error) { ++failures; std::cerr << winrt::to_string(error.message()) << '\n'; }
     catch (const std::exception& error) { ++failures; std::cerr << error.what() << '\n'; }
   std::error_code ignored; std::filesystem::remove_all(directory, ignored);

@@ -27,7 +27,7 @@ add_library(quickdial_core STATIC
 target_include_directories(quickdial_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(quickdial_core PUBLIC BLADE_LAUNCHER_VERSION="${PROJECT_VERSION}" UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(quickdial_core PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(quickdial_core PUBLIC windowsapp shell32 ole32)
+target_link_libraries(quickdial_core PUBLIC windowsapp shell32 ole32 msi)
 
 add_library(quickdial_background STATIC
   src/BackgroundTasks.cpp

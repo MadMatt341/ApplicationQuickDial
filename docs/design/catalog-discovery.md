@@ -24,11 +24,9 @@ AppsFolder remains the packaged-app provider. No raw executable/registry/package
 
 `RefreshPolicy` owns a deterministic 750 ms debounce with a three-second maximum from the first event, and a finite two/five-second retry sequence after event scans or failures. A scan in progress coalesces events/reloads into one follow-up. A fresh healthy open reuses the cache; no healthy refresh, failure, cache age of five minutes, or watcher degradation triggers catch-up on open. Disabling discovery and teardown cancel delays/retries. Each successful source replaces only its source cache; failed providers preserve prior entries with a stale-source warning. Unreadable individual entries are skipped and counted; failed enumeration does not publish a partial source. Tray-free errors preserve the active query and do not initiate another scan.
 
-Configured entries retain JSON order and take precedence; remaining discovered entries are de-duplicated by case-insensitive target, app identifier qualified by command arguments/working folder, or canonical executable/arguments/working-folder command and appended alphabetically. Manual IDs intentionally override the matching discovered ID. Display names do not identify applications without command data. Applications with the same name and different commands stay in the list. Physical shortcuts replace equivalent indexed entries. Shortcuts with different arguments or working folders stay in the list.
+Configured entries keep JSON order and take precedence. The launcher adds the other discovered entries in alphabetical order. The [duplicate matching rules](#duplicate-matching) define equivalent commands.
 
-An indexed entry can have no working-folder data. The launcher uses a physical shortcut when its executable, arguments, and display name are the same. The launcher also uses a physical shortcut when its app identifier and arguments are the same. Executable paths, display names, and app identifiers can have different letter case. Arguments must have the same letter case. The physical shortcut keeps its specified working folder.
-
-The launcher uses only shortcuts that are in the application list for this check. Automatic maintenance commands are excluded using exact known uninstall executable names or a maintenance label combined with command/identity evidence. `includedApplications` restores an exception; `hiddenApplications` still wins. Manual apps bypass maintenance filtering.
+Automatic maintenance exclusions use exact known uninstall executable names or a maintenance label with command or identity data. `includedApplications` lets the launcher include an exception. `hiddenApplications` takes precedence. Manual entries bypass maintenance exclusions.
 
 Discovery results are never written to the JSON file. Completion merges against the most recent valid configuration, preserving the query and selected target. Identical discovery results with an unchanged error state skip catalog rebuilding and icon invalidation. If a file reload failed while scanning, completion updates only the discovery cache and leaves the displayed catalog and parse error intact until a valid reload.
 
@@ -37,6 +35,21 @@ Parsing uses `Windows.Data.Json`. A UTF-8 BOM is accepted. Version must be numer
 Environment variables are expanded in `target`, `workingDirectory`, and `icon`. They are not expanded in `name`, `aliases`, or `arguments`.
 
 `LauncherApp::ReloadCatalog` replaces `catalog_` only after a complete successful parse. On failure it stores an error string and keeps the last valid catalog. This permits a user to fix a malformed file without losing the working in-memory list. On first-run failure there is no valid catalog to search. A discovery failure is non-fatal: configured entries and the last successful discovery cache remain usable while the error is surfaced in the launcher and tray notification.
+
+## Duplicate matching
+
+The launcher compares original launch targets, application identifiers with command data, and equivalent commands. A command includes its executable, arguments, and working folder. Windows file paths and application identifiers ignore letter case, but arguments and URI paths keep their letter case. A discovered identifier also includes the available executable path. Equal identifiers cannot hide different known executables. A configured `id` overrides discovered entries for that identifier.
+
+A Windows indexed entry can have no working-folder data. A physical shortcut replaces this entry when its executable and equivalent arguments agree, with an equal display name or application identifier. If the indexed executable is unknown, the launcher compares the application identifier and arguments. The physical shortcut keeps its specified working folder. Only included shortcuts participate in this comparison. Different known working folders keep separate entries.
+
+The launcher uses these rules for equivalent commands:
+
+- Chromium browser commands can contain the launch-metrics flag `--source-shortcut-location=desktop`, `--source-shortcut-location=start-menu`, or `--source-shortcut-location=taskbar`. Comparison ignores only these flags for `brave.exe`, `chrome.exe`, `chrome_proxy.exe`, `msedge.exe`, `msedge_proxy.exe`, and `chromium.exe`. Flags after `--` stay as positional arguments. Comparison includes profiles, web-app identifiers, URLs, private-mode flags, and unknown arguments. The [Chromium switch contract](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/chrome/common/chrome_switches.h) identifies this flag as launch-metrics data.
+- Squirrel commands require a `com.squirrel.` application identifier and `Update.exe --processStart <executable>`. Their working folder must be an `app-` child of the updater's folder. The requested executable must be a filename with the `.exe` extension. The optional `--process-start-args <arguments>` supplies the application's arguments. Other syntax keeps its original command identity. An equivalent stable updater shortcut takes precedence over a direct versioned executable.
+
+Shortcut metadata uses the registered target for an advertised Windows Installer shortcut. The reader uses [MsiGetShortcutTargetW](https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msigetshortcuttargetw) and [MsiGetComponentPathW](https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msigetcomponentpathw). The reader accepts only an installed local file. For missing registrations, registry-key targets, or directories, the reader uses ordinary shortcut metadata. A namespace shortcut with no file path uses its stored PIDL target. URL shortcuts and indexed URLs use the same command format.
+
+These operations read metadata only. They do not resolve, repair, install, or launch applications. The original shortcut stays as the launch target, with its arguments and working folder unchanged. Equal display names alone never remove an entry. Different browsers, profiles, web apps, application versions, and other command arguments keep separate entries.
 
 ## Discovery process boundary
 
