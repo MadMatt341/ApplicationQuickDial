@@ -26,6 +26,7 @@
 namespace quickdial {
 
 class HookManager;
+class StartupInputTrace;
 class BackgroundTasks;
 class InstalledAppsWatcher;
 struct InstalledAppsResult;
@@ -169,6 +170,7 @@ class LauncherApp {
   int wheelRemainder_ = 0;
 
   std::unique_ptr<HookManager> hookManager_;
+  std::unique_ptr<StartupInputTrace> inputTrace_;
   std::unique_ptr<InstalledAppsWatcher> installedAppsWatcher_;
   std::unique_ptr<BackgroundTasks> iconTasks_;
   std::unique_ptr<BackgroundTasks> discoveryTasks_;

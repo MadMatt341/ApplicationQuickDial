@@ -6,6 +6,7 @@
 #include "BackgroundTasks.h"
 #include "DiscoveryProcess.h"
 #include "HookManager.h"
+#include "StartupInputTrace.h"
 #include "InstalledApps.h"
 #include "InstalledAppsWatcher.h"
 #include "LauncherVisualStyle.h"
@@ -152,6 +153,7 @@ LauncherApp::~LauncherApp() {
   if (hookManager_) {
     hookManager_->Stop();
   }
+  if (inputTrace_) inputTrace_->Stop();
   RemoveTrayIcon();
   ReleaseDeviceResources();
   if (editFont_ != nullptr) {
@@ -183,7 +185,8 @@ bool LauncherApp::Initialize(HINSTANCE instance) {
   }
   AddTrayIcon();
 
-  hookManager_ = std::make_unique<HookManager>(window_);
+  if (shellMode_) inputTrace_ = StartupInputTrace::StartFromEnvironment();
+  hookManager_ = std::make_unique<HookManager>(window_, inputTrace_.get());
   const bool hookReady = hookManager_->Start();
   ReloadCatalog();
   if (shellMode_) EnterShellMode();
@@ -542,6 +545,7 @@ void LauncherApp::ShowNotification(std::wstring_view title, std::wstring_view me
 }
 
 void LauncherApp::ShowLauncher() {
+  if (inputTrace_) inputTrace_->Record(InputTracePhase::ShowRequested, window_);
   trayMenuCancellation_.request_stop();
   ++trayMenuGeneration_;
   trayMenuActive_ = false;
@@ -560,9 +564,10 @@ void LauncherApp::ShowLauncher() {
   UpdateResults();
   ResizeAndPosition(true);
   ShowWindow(window_, SW_SHOWNORMAL);
-  SetForegroundWindow(window_);
+  const bool foregroundAccepted = SetForegroundWindow(window_) != FALSE;
   SetActiveWindow(window_);
   SetFocus(edit_);
+  if (inputTrace_) inputTrace_->Record(InputTracePhase::ShowCompleted, window_, foregroundAccepted, GetFocus());
   SendMessageW(edit_, EM_SETSEL, 0, -1);
   InvalidateRect(window_, nullptr, FALSE);
   RequestTrayControls();
@@ -574,6 +579,7 @@ void LauncherApp::ShowLauncher() {
 }
 
 void LauncherApp::HideLauncher() {
+  if (inputTrace_) inputTrace_->Record(InputTracePhase::Hide, window_);
   pendingTrayMenu_.reset();
   trayMenuCancellation_.request_stop();
   KillTimer(window_, kTrayControlsTimer);
@@ -1806,6 +1812,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_ACTIVATE:
+      if (inputTrace_ && LOWORD(wParam) == WA_INACTIVE) inputTrace_->Record(InputTracePhase::Deactivate, window_);
       if (LOWORD(wParam) == WA_INACTIVE && IsWindowVisible(window_) && !powerActionActive_) {
         HideLauncher();
       }
@@ -1845,6 +1852,7 @@ LRESULT LauncherApp::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
 
     case kMessageToggleLauncher:
+      if (inputTrace_) inputTrace_->Record(InputTracePhase::ToggleReceived, window_);
       ToggleLauncher();
       return 0;
 

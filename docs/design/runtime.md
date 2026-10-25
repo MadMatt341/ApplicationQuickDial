@@ -15,6 +15,10 @@ Blade Launcher has one resident GUI process with two resident threads, bounded b
 
 `InstalledAppsWatcher` owns up to two Shell notification registrations and two kernel directory-change handles; partial subscriptions remain usable and visible diagnostics identify degraded operation. The main loop blocks in `MsgWaitForMultipleObjectsEx` for window messages or directory changes; watching adds no resident worker or polling loop. Shell notifications arrive as `kMessageInstalledApplicationsChanged`, and their shared-memory payload is locked and released on the main thread. No enumeration runs in these handlers.
 
+An armed [sign-in input trace](#sign-in-input-trace) adds one temporary worker thread.
+This worker records input observations and Windows focus state.
+The worker stops after two minutes from the shared Blade startup clock, or when the log reaches its size limit.
+
 ## Startup sequence
 
 `wWinMain` performs the following work:
@@ -95,3 +99,54 @@ Use a permanent executable location. A linked Git worktree (a `.git` file) refus
 Bounded `WM_COPYDATA` copies each request into a main-thread queue (maximum eight), then a posted message generates the response outside synchronous input. The caller pumps replies with a bounded wait. This avoids Windows Runtime/COM activation inside an incoming sent message. No shared application pointers or arbitrary receiver file writes cross the boundary. The caller writes its own report. Request text is capped at 4095 UTF-16 code units; responses at four MiB; NUL and framing validation precede dispatch. Calls have bounded timeouts and do not bypass the singleton. The protocol is read-only except the explicit `--search` UI request; it has no launch or power-action verb.
 
 `--register-app <single-app JSON> --account <SID> --output <report>` and read-only `--catalog-status` are native helpers before singleton setup. The public [registration script](../registration.md) creates ordinary account-checked Windows processes and requires independent readback; inherited packaged context is rejected. They do not require replacing or stopping the running instance.
+
+## Sign-in input trace
+
+Use this trace when Win+Space fails before the first mouse click after Windows sign-in.
+The trace requires a new shell-mode Launcher process and a valid shared Blade startup clock.
+It does not change shortcut decisions or window activation.
+
+To arm one capture, run this command in an ordinary PowerShell window:
+
+```powershell
+New-Item -ItemType File -Force -Path "$env:USERPROFILE\AppData\Local\WindowManager\Logs\Startup\trace-launcher-input.once"
+```
+
+The startup log directory must exist.
+For a custom `RUST_SHELL_LOG_DIR`, use its `Startup` directory.
+Launcher removes the marker after it creates the trace file and starts the worker.
+An invalid clock or a file creation failure keeps the marker for a later start.
+To cancel an armed capture, remove only this marker file.
+
+At the next planned sign-in, use this sequence within the first two minutes:
+
+1. Before a mouse click, press Win+Space.
+2. If Launcher does not open, click an application window.
+3. Press Win+Space again.
+
+The capture writes `launcher-input-<pid>.jsonl` in that sign-in's `Logs/Startup/<run>` directory.
+The log stops at 120 seconds from shared startup, 256 KiB, or Launcher exit.
+The worker then stops and requests removal of the temporary mouse hook.
+The `capture_closed` row gives the stop condition and the number of queue drops.
+The next sign-in does not capture input unless you create another marker.
+
+The trace records keyboard-hook installation, Win/Space events, tracked modifier bits, asynchronous key-state results, shortcut decisions, mask delivery, and toggle-message delivery.
+It also records Launcher show/hide events, foreground activation results, and keyboard focus after activation.
+Native focus samples include HWNDs, process/thread identities, window class, executable path, integrity level when available, and desktop names.
+The mouse hook records physical button-down events without coordinates.
+The trace does not record other keys, typed text, window titles, or application content.
+
+Hook callbacks put fixed-size observations in a 256-entry queue without waiting for a lock.
+The temporary worker owns file writing and JSON conversion.
+The existing keyboard-hook thread owns the temporary mouse hook.
+It checks native focus state at intervals of 250 ms and after queued observations.
+It writes a focus sample only when the observed state changes.
+Write failures stop recording without stopping Launcher.
+
+Rows use Blade startup schema version 1 and its shared QPC clock.
+The row timestamp identifies writer time.
+For queued observations, `observedQpc` and `observedElapsedUs` identify callback or UI observation time.
+Use observation time to compare a shortcut with a mouse click.
+Queue delay, queue drops, and upstream hooks can limit the evidence.
+A missing key event alone does not establish a Launcher decision.
+A missing final row can indicate a write failure or an abrupt process exit.

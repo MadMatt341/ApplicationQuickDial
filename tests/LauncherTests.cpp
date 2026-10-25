@@ -7,6 +7,8 @@
 #include "InstalledApps.h"
 #include "BackgroundTasks.h"
 #include "AppMessages.h"
+#include "HookManager.h"
+#include "StartupInputTrace.h"
 #include "DiscoveryProcess.h"
 #include "InstalledAppsWatcher.h"
 #include "LauncherDiagnostics.h"
@@ -114,6 +116,61 @@ class LauncherAppTestAccess {
   }
 
  public:
+  static int RunInputTraceChecks(const std::filesystem::path& catalog, const std::filesystem::path& evidence) {
+    wchar_t desktopName[256]{}; DWORD needed = 0;
+    if (!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, desktopName, sizeof(desktopName), &needed) ||
+        !std::wstring_view(desktopName).starts_with(L"BladeLauncherFixture-")) {
+      std::cerr << "FAILED: use --private-desktop for input trace checks\n"; return 1;
+    }
+    int failures = 0;
+    const auto check = [&](bool value, const char* message) { if (!value) { ++failures; std::cerr << "FAILED: " << message << '\n'; } };
+    const auto run = catalog.parent_path() / L"input-run";
+    std::filesystem::create_directory(run);
+    const auto marker = catalog.parent_path() / L"trace-launcher-input.once";
+    const auto cleanup = [&run, &marker](void*) {
+      std::error_code error; std::filesystem::remove_all(run, error); std::filesystem::remove(marker, error);
+    };
+    const std::unique_ptr<void, decltype(cleanup)> guard(&failures, cleanup);
+    std::ofstream(marker) << "fixture\n";
+    LARGE_INTEGER origin{}, frequency{}; QueryPerformanceCounter(&origin); QueryPerformanceFrequency(&frequency);
+    SetEnvironmentVariableW(L"BLADE_STARTUP_DIR", run.c_str());
+    SetEnvironmentVariableW(L"BLADE_STARTUP_QPC", std::to_wstring(origin.QuadPart).c_str());
+    SetEnvironmentVariableW(L"BLADE_STARTUP_FREQUENCY", std::to_wstring(frequency.QuadPart).c_str());
+    const auto log = run / (L"launcher-input-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+    {
+      LauncherApp app(nullptr, catalog, true);
+      if (!app.Initialize(GetModuleHandleW(nullptr))) { std::cerr << "FAILED: Launcher initialization\n"; return 1; }
+      check(app.inputTrace_ != nullptr && !std::filesystem::exists(marker), "shell-mode initialization starts and consumes its trace request");
+      app.HandleMessage(kMessageToggleLauncher, 0, 0);
+      GUITHREADINFO native{sizeof(native)};
+      check(GetGUIThreadInfo(GetCurrentThreadId(), &native) != FALSE, "independent native focus observation succeeds");
+      const auto focusAfterShow = native.hwndFocus;
+      app.HideLauncher(); app.hookManager_->Stop();
+      if (app.inputTrace_) app.inputTrace_->Stop();
+      bool hookReady = false, toggle = false, requested = false, completed = false, hidden = false;
+      std::ifstream file(log); std::string line;
+      while (std::getline(file, line)) {
+        winrt::Windows::Data::Json::JsonObject row;
+        if (!winrt::Windows::Data::Json::JsonObject::TryParse(winrt::to_hstring(line), row)) { check(false, "trace row is valid JSON"); continue; }
+        const auto phase = row.GetNamedString(L"phase"); const auto details = row.GetNamedObject(L"details");
+        if (phase == L"keyboard_hook_ready") hookReady = details.GetNamedBoolean(L"accepted");
+        if (phase == L"toggle_received") toggle = true;
+        if (phase == L"show_requested") requested = true;
+        if (phase == L"show_completed") { completed = true; check(details.GetNamedNumber(L"focus") == reinterpret_cast<INT_PTR>(focusAfterShow), "show trace agrees with independently observed native keyboard focus"); }
+        if (phase == L"hide_requested") hidden = true;
+      }
+      check(hookReady && toggle && requested && completed && hidden, "actual hook installation and Launcher toggle/show/hide paths produce trace records");
+      check(Drain(app), "owned background work finishes before fixture cleanup");
+      DestroyWindow(app.window_);
+    }
+    if (!evidence.empty()) {
+      std::filesystem::create_directories(evidence);
+      std::filesystem::copy_file(log, evidence / L"launcher-input-fixture.jsonl");
+    }
+    std::filesystem::remove(log); std::filesystem::remove(run); std::filesystem::remove(marker);
+    if (!failures) std::cout << "Startup input trace integration checks passed on an inactive desktop.\n";
+    return failures ? 1 : 0;
+  }
   static int RunTrayControlChecks(const std::filesystem::path& catalog, const std::filesystem::path& captures = {}) {
     wchar_t desktopName[256]{};
     DWORD needed=0;
@@ -1191,7 +1248,8 @@ int main(int argc, char** argv) {
   const bool checkLaunching = argc == 2 && std::string_view(argv[1]) == "--check-launching";
   const bool checkTrayControls = argc >= 2 && std::string_view(argv[1]) == "--check-tray-controls";
   const bool checkMainMenu = argc >= 2 && std::string_view(argv[1]) == "--check-main-menu";
-  const int result = checkTrayControls ? quickdial::LauncherAppTestAccess::RunTrayControlChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkInstallation ? quickdial::LauncherAppTestAccess::RunDiscoveryChecks(path) : checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
+  const bool checkInputTrace = argc >= 2 && std::string_view(argv[1]) == "--check-input-trace";
+  const int result = checkInputTrace ? quickdial::LauncherAppTestAccess::RunInputTraceChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkTrayControls ? quickdial::LauncherAppTestAccess::RunTrayControlChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkInstallation ? quickdial::LauncherAppTestAccess::RunDiscoveryChecks(path) : checkMainMenu ? quickdial::LauncherAppTestAccess::RunMainMenuChecks(path, argc == 3 ? std::filesystem::path(winrt::to_hstring(argv[2]).c_str()) : std::filesystem::path{}) : checkLaunching ? quickdial::LauncherAppTestAccess::RunLaunchChecks(path)
                                    : quickdial::LauncherAppTestAccess::Run(path, iconPath, checkInstallation);
   std::filesystem::remove(path);
   std::filesystem::remove(iconPath);

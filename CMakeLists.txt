@@ -47,6 +47,7 @@ target_link_libraries(quickdial_discovery PUBLIC quickdial_core ole32)
 
 add_executable(ApplicationQuickDial WIN32
   src/HookManager.cpp
+  src/StartupInputTrace.cpp
   src/InstalledAppsWatcher.cpp
   src/LauncherApp.cpp
   src/TrayControls.cpp
@@ -88,6 +89,13 @@ target_link_libraries(ApplicationQuickDial PRIVATE blade_appearance)
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(quickdial_input_trace_tests tests/StartupInputTraceTests.cpp src/StartupInputTrace.cpp)
+  target_include_directories(quickdial_input_trace_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(quickdial_input_trace_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(quickdial_input_trace_tests PRIVATE /W4 /permissive- /EHsc)
+  target_link_libraries(quickdial_input_trace_tests PRIVATE windowsapp user32 advapi32)
+  add_test(NAME quickdial_input_trace_tests COMMAND quickdial_input_trace_tests)
+  set_tests_properties(quickdial_input_trace_tests PROPERTIES TIMEOUT 20)
   add_executable(quickdial_reliability_tests tests/ReliabilityTests.cpp src/InstalledAppsWatcher.cpp)
   target_compile_options(quickdial_reliability_tests PRIVATE /W4 /permissive- /EHsc)
   target_link_libraries(quickdial_reliability_tests PRIVATE quickdial_registration)
@@ -117,6 +125,7 @@ if(BUILD_TESTING)
   add_executable(quickdial_launcher_tests
     tests/LauncherTests.cpp
     src/HookManager.cpp
+    src/StartupInputTrace.cpp
     src/InstalledAppsWatcher.cpp
     src/LauncherApp.cpp
     src/TrayControls.cpp

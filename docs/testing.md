@@ -6,6 +6,8 @@ Run the CTest suite for every code change, then only the integration/manual sect
 
 The targets are:
 
+- `quickdial_input_trace_tests`: single-capture arming, invalid clocks, preserved evidence, event fields, content exclusion, shared timestamps, and log size limits.
+
 - `quickdial_core`: catalog parsing, installed-app discovery/merge, search, and hotkey state; linked by both the application and tests.
 - `ApplicationQuickDial`: Windows GUI executable and system integration.
 - `quickdial_tests`: small assertion-based test executable registered with CTest.
@@ -17,6 +19,22 @@ The targets are:
 - `quickdial_single_instance_tests`: explicit integration checks using private Win32 desktops and fixture processes. Covers independent desktop instances, repeated launches, concurrent startup, abandoned ownership, older-version forwarding, and bounded failures for missing or unresponsive windows. It does not switch the user's desktop or use their catalog.
 
 All targets compile as C++20 with `/W4`, `/permissive-`, and `/EHsc`.
+
+Input trace tests use temporary marker files and logs.
+They do not send keyboard or mouse input, or change foreground focus.
+These tests do not establish physical Win+Space delivery at sign-in.
+Use the [sign-in input trace](design/runtime.md#sign-in-input-trace) for that check.
+
+Run the trace integration fixture on an inactive desktop:
+
+```powershell
+.\build\Release\quickdial_launcher_tests.exe --private-desktop --check-input-trace
+```
+
+This fixture checks actual hook installation and Launcher toggle/show/hide records.
+It compares the recorded focus with a separate `GetGUIThreadInfo` observation.
+The parent checks that the input desktop does not change.
+An optional final output directory keeps the fixture log for the Blade startup analyzer.
 
 To inspect the Windows Apps-folder discovery output without starting the launcher:
 

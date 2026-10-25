@@ -9,10 +9,11 @@
 #include <thread>
 
 namespace quickdial {
+class StartupInputTrace;
 
 class HookManager {
  public:
-  explicit HookManager(HWND notificationWindow);
+  explicit HookManager(HWND notificationWindow, StartupInputTrace* inputTrace = nullptr);
   ~HookManager();
 
   HookManager(const HookManager&) = delete;
@@ -24,11 +25,13 @@ class HookManager {
 
  private:
   static LRESULT CALLBACK HookProcedure(int code, WPARAM wParam, LPARAM lParam);
+  static LRESULT CALLBACK MouseProcedure(int code, WPARAM message, LPARAM data);
   void ThreadMain();
 
   static HookManager* instance_;
 
   HWND notificationWindow_ = nullptr;
+  StartupInputTrace* inputTrace_ = nullptr;
   HHOOK hook_ = nullptr;
   DWORD threadId_ = 0;
   DWORD error_ = ERROR_SUCCESS;

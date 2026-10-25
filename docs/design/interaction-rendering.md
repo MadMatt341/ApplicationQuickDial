@@ -21,6 +21,9 @@ Before each non-injected Space event, the hook checks the high bit of `GetAsyncK
 
 The hook cannot operate on the secure desktop and may not intercept input sent to a higher-integrity process. The tray icon remains a fallback in normal mode. Relaunching the executable opens the existing launcher in either mode.
 
+For input failures after Windows sign-in, use the [sign-in input trace](runtime.md#sign-in-input-trace).
+The trace records shortcut decisions without changing them.
+
 ## Search and selection
 
 Every edit-control `EN_CHANGE` notification calls `UpdateResults`. The query is trimmed and lowercased with the invariant locale. Each application name is scored first:
