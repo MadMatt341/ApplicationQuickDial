@@ -311,6 +311,39 @@ void TestDuplicateLaunchPatterns() {
   Check(withoutUpdater.applications.size() == 1 && withoutUpdater.applications[0].target == direct.target,
       "an excluded updater never suppresses the available direct shortcut");
 
+  // Slack updates leave two shortcuts to the same root launcher with old/new app folders.
+  const auto slack = shortcut(L"Slack", L"Slack Technologies Inc\\Slack.lnk", L"C:\\Slack\\slack.exe",
+      L"", L"C:\\Slack\\app-4.53.280", L"com.squirrel.slack.slack");
+  auto previousSlack = slack; previousSlack.target = L"Slack.lnk";
+  previousSlack.shortcutWorkingDirectory = L"C:\\Slack\\app-4.53.276";
+  auto indexedSlack = slack; indexedSlack.source = ApplicationSource::AppsFolder;
+  indexedSlack.target = L"shell:AppsFolder\\com.squirrel.slack.slack";
+  indexedSlack.shortcutWorkingDirectory.clear();
+  for (const auto& inventory : {std::vector{slack, previousSlack, indexedSlack},
+                              std::vector{indexedSlack, previousSlack, slack}}) {
+    const auto merged = merge({}, inventory);
+    Check(merged.applications.size() == 1 && merged.applications[0].source == ApplicationSource::UserStartMenu &&
+        merged.applications[0].resolvedTarget == L"C:\\Slack\\slack.exe" &&
+        (merged.applications[0].target == slack.target || merged.applications[0].target == previousSlack.target),
+        "Slack root-launcher shortcuts survive updates as one original physical shortcut in either inventory order");
+  }
+  for (int change = 0; change < 7; ++change) {
+    auto variant = previousSlack; variant.target = L"variant-slack.lnk";
+    if (change == 0) variant.shortcutArguments = L"--profile Work";
+    if (change == 1) variant.resolvedTarget = L"C:\\Other\\slack.exe";
+    if (change == 2) variant.shortcutWorkingDirectory = L"C:\\Other\\app-4.53.276";
+    if (change == 3) variant.shortcutWorkingDirectory = L"C:\\Slack\\Work";
+    if (change == 4) variant.identity = L"unrelated.slack";
+    if (change == 5) variant.resolvedTarget = L"C:\\Slack\\app-4.53.276\\slack.exe";
+    if (change == 6) variant.resolvedTarget = L"C:\\Slack\\other.exe";
+    Check(merge({}, {slack, variant}).applications.size() == 2,
+        "stable-launcher matching preserves arguments, installations, foreign/nonversion folders, identities and executables");
+  }
+  Catalog hiddenSlack; hiddenSlack.hiddenApplications = {slack.target};
+  const auto visibleSlack = merge(hiddenSlack, {slack, previousSlack, indexedSlack});
+  Check(visibleSlack.applications.size() == 1 && visibleSlack.applications[0].target == previousSlack.target,
+      "an excluded Slack shortcut cannot suppress its available stable-launcher alternative");
+
   auto url = shortcut(L"Release notes", L"release-notes.url", L"https://example.invalid/Notes?Version=A", L"", L"", L"");
   auto urlIndex = url; urlIndex.target = L"shell:AppsFolder\\https://example.invalid/Notes?Version=A";
   urlIndex.source = ApplicationSource::AppsFolder;

@@ -87,6 +87,23 @@ std::optional<ShortcutCommand> SquirrelCommand(const ApplicationEntry& app) {
   return ShortcutCommand{(directory / executable).wstring(), args.size() == 4 ? args[3] : L""};
 }
 
+std::wstring StableSquirrelLauncherKey(const ApplicationEntry& app) {
+  // A root launcher dispatches the current app; an app-* working folder is
+  // leftover shortcut metadata, not a request to launch that executable version.
+  if (!app.identity || !FoldCase(*app.identity).starts_with(L"com.squirrel.")) return {};
+  const std::filesystem::path executable(app.resolvedTarget), directory(app.shortcutWorkingDirectory);
+  const auto identity = FoldCase(*app.identity);
+  if (!executable.is_absolute() || !directory.is_absolute() ||
+      FoldCase(executable.extension().wstring()) != L".exe" ||
+      FoldCase(executable.filename().wstring()) == L"update.exe" ||
+      !identity.ends_with(L"." + FoldCase(executable.stem().wstring())) ||
+      !FoldCase(directory.filename().wstring()).starts_with(L"app-") ||
+      directory.filename().wstring().size() <= 4 ||
+      NormalizedPath(directory.parent_path().wstring()) != NormalizedPath(executable.parent_path().wstring())) return {};
+  return L"stable-squirrel:" + identity + L"|" +
+      EquivalentLaunchKey(app.resolvedTarget, app.shortcutArguments, executable.parent_path().wstring());
+}
+
 std::wstring ShortcutLaunchKey(const ApplicationEntry& app, bool withDirectory = true) {
   const auto command = SquirrelCommand(app);
   return EquivalentLaunchKey(command ? command->target : app.resolvedTarget,
@@ -147,6 +164,8 @@ std::wstring HResultMessage(std::wstring_view prefix, HRESULT result) {
 void AddApplicationKeys(
     const ApplicationEntry& application, std::unordered_set<std::wstring>& keys) {
   keys.insert(L"target:" + ComparisonTarget(application.target));
+  const auto stableLauncher = StableSquirrelLauncherKey(application);
+  if (!stableLauncher.empty()) keys.insert(stableLauncher);
   if (application.identity && !application.identity->empty()) {
     if (application.source == ApplicationSource::Manual) keys.insert(L"override-id:" + FoldCase(*application.identity));
     else keys.insert(L"id:" + FoldCase(*application.identity) + EquivalentLaunchKey(
@@ -173,6 +192,8 @@ void AddApplicationKeys(
 
 bool HasApplicationKey(
     const ApplicationEntry& application, const std::unordered_set<std::wstring>& keys) {
+  const auto stableLauncher = StableSquirrelLauncherKey(application);
+  if (!stableLauncher.empty() && keys.contains(stableLauncher)) return true;
   if (keys.contains(L"target:" + ComparisonTarget(application.target))) {
     return true;
   }
